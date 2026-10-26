@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "worker_id": "host-2-41233",
+  "hostname": "host",
+  "pid": 41233,
+  "state": "BUSY",
+  "task_id": "33333333-3333-4333-8333-833333333333",
+  "job_id": "22222222-2222-4222-8222-222222222222",
+  "task_kind": "MERGE",
+  "tasks_done": 118,
+  "started_at": "2026-10-23T11:00:00Z",
+  "sent_at": "2026-10-23T11:05:02Z"
+}

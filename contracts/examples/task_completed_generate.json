@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "task_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "job_id": "11111111-2222-3333-4444-555555555555",
+  "attempt": 1,
+  "kind": "GENERATE",
+  "worker_id": "host-2-41233",
+  "duration_ms": 40,
+  "output": { "files_written": 5 }
+}

@@ -1,0 +1,57 @@
+# Future work
+
+Designed but not built. Each entry says when to build it and how.
+
+## 1. Fair-share dispatcher
+**When:** small jobs waiting behind a big job's generation hurts the user experience (IPD-014).
+- Tasks wait in Postgres. A dispatcher publishes only while `messages_ready < 2 × live workers`.
+- It picks round-robin across jobs; within a job, deepest merge first, then MERGE before GENERATE (`SELECT DISTINCT ON (job_id) … ORDER BY job_id, level DESC, created_at`, with a rotating cursor).
+- **Gains:** real fairness, about W live partials per job, a near-empty queue.
+- **Costs:** one loop and one tick of latency.
+
+## 2. Per-level priority
+**When:** live partials matter (disk). Two levels are already built (ITD-020).
+- A classic queue with `x-max-priority=10` and priority = `min(level, 9)` runs deeper merges first.
+- **Costs:** loses the quorum delivery limit and dead-lettering. The dispatcher (§1) is probably the better route.
+
+## 3. Coordinator scale-out
+**When:** the benchmark (ITD-027) shows workers waiting on the coordinator, or the single point of failure matters. Options, cheapest first:
+1. **Batch:** up to N messages or 20 ms per transaction, acked with `multiple=true`. On failure, replay one at a time (ITD-022 rules apply).
+2. **Shard by `job_id`:** a consistent-hash exchange in front of K coordinator queues, one coordinator each. Each job is still handled serially by one instance.
+3. **Workers write the DB themselves:** this breaks invariant 1, so it needs a user-approved ITD.
+
+## 4. Configurable W through the API
+**When:** the bonus is wanted (IPD-008).
+- `PUT /fleet {desired_workers}` stores the target in a one-row `fleet` table. `GET /fleet` returns the target and live counts.
+- The supervisor polls `GET /fleet` every 1–2 s and reconciles.
+  - **Scale up:** spawn workers.
+  - **Scale down:** idle workers first (SIGTERM). Then the newest busy workers drain: stop consuming, finish, ack, exit. No work is lost.
+- The UI gets a number input and a target-vs-actual display.
+- **Production:** set `replicas` / `desiredCount`, or KEDA's min/max.
+
+## 5. Faster hang detection
+**When:** about 15 minutes (ITD-008) is too slow.
+1. **Progress watchdog (about 20 lines):** the task thread bumps a counter per file; if it stops moving for N seconds, the process exits. Slow workers aren't killed, because it measures progress rather than time.
+2. **API reaper:** heartbeats carry `{task_id, attempt, progress}`. When they go stale, the reaper republishes with `attempt + 1` and a new token, and completions must match the token. Needed only for untrusted workers or with the dispatcher.
+
+## 6. Backup copies of slow tasks
+**When:** stragglers dominate job tails (IPD-012).
+- Condition: the queue is empty, a worker is idle, and a task has been running longer than 2× the median for its kind.
+- Republish one copy with the same `task_id`. The first completion wins (ITD-009). At most one backup per task.
+
+## 7. Object storage
+**When:** going beyond one machine.
+- Swap the storage modules for S3-compatible ones (MinIO locally, S3 or GCS in production). A `PUT` is already atomic. Lifecycle rules replace partial cleanup.
+
+## 8. Disk budget
+**When:** full disks become a problem (IPD-002).
+- At `POST /jobs`, estimate `f·c + (M−1)·8c` and return `413` if it exceeds `DISK_BUDGET_BYTES` minus current usage.
+
+## 9. Artificial worker slowdown
+**When:** a demo needs visible speed differences (IPD-009).
+- A `WORKER_SPEED_FACTOR` per worker, random in [0.5, 3] when unset. Each file sleeps `(50 + C/10,000) ms × factor`, ±20%.
+- The factor is shown in heartbeats and the UI.
+
+## 10. Eager tail merges
+**When:** job tails need shortening.
+- Also merge 2–4 ready items when the queue is empty and a worker is idle. Saves up to about one merge per job, at the cost of extra tasks and the coordinator depending on worker state.

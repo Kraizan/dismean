@@ -1,0 +1,76 @@
+{
+  "rabbit_version": "4.0.0",
+  "users": [
+    {
+      "name": "guest",
+      "password_hash": "sB+L03C0QmbaJHuhCLj0tK4HpsQBMq+Ir5Xw5U9g7zb7510z",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "vhosts": [{ "name": "/" }],
+  "exchanges": [
+    { "name": "dm.tasks", "vhost": "/", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "dm.dlx", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "dm.events", "vhost": "/", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "dm.control", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+  "queues": [
+    {
+      "name": "dm.tasks",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 3,
+        "x-dead-letter-exchange": "dm.dlx",
+        "x-consumer-timeout": 900000
+      }
+    },
+    {
+      "name": "dm.tasks.dead",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "dm.coordinator",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 1000000
+      }
+    },
+    {
+      "name": "dm.heartbeats",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 10000,
+        "x-max-length": 10000,
+        "x-overflow": "drop-head"
+      }
+    }
+  ],
+  "bindings": [
+    { "source": "dm.tasks", "vhost": "/", "destination": "dm.tasks", "destination_type": "queue", "routing_key": "task", "arguments": {} },
+    { "source": "dm.dlx", "vhost": "/", "destination": "dm.tasks.dead", "destination_type": "queue", "routing_key": "", "arguments": {} },
+    { "source": "dm.events", "vhost": "/", "destination": "dm.coordinator", "destination_type": "queue", "routing_key": "task.completed", "arguments": {} },
+    { "source": "dm.events", "vhost": "/", "destination": "dm.coordinator", "destination_type": "queue", "routing_key": "task.failed", "arguments": {} },
+    { "source": "dm.events", "vhost": "/", "destination": "dm.heartbeats", "destination_type": "queue", "routing_key": "worker.heartbeat", "arguments": {} }
+  ]
+}

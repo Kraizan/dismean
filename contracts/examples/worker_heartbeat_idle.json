@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "worker_id": "host-0-41001",
+  "hostname": "host",
+  "pid": 41001,
+  "state": "IDLE",
+  "task_id": null,
+  "job_id": null,
+  "task_kind": null,
+  "tasks_done": 42,
+  "started_at": "2026-10-23T11:00:00Z",
+  "sent_at": "2026-10-23T11:05:00Z"
+}

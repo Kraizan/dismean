@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "task_id": "e5f6a7b8-c9d0-1234-ef01-345678901234",
+  "job_id": "11111111-2222-3333-4444-555555555555",
+  "attempt": 1,
+  "kind": "MERGE",
+  "c": 1000,
+  "merge": {
+    "inputs": [
+      {
+        "item_id": "f6a7b8c9-d0e1-2345-f012-456789012345",
+        "path": "jobs/11111111-2222-3333-4444-555555555555/partials/partial-a.npy",
+        "count": 5
+      },
+      {
+        "item_id": "a7b8c9d0-e1f2-3456-0123-567890123456",
+        "path": "jobs/11111111-2222-3333-4444-555555555555/partials/partial-b.npy",
+        "count": 7
+      }
+    ],
+    "output_path": null,
+    "final": true,
+    "total_count": 12,
+    "result_paths": {
+      "npy": "jobs/11111111-2222-3333-4444-555555555555/result.npy",
+      "csv": "jobs/11111111-2222-3333-4444-555555555555/result.csv"
+    }
+  }
+}
