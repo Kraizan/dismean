@@ -64,6 +64,8 @@ def main() -> int:
 
     print("==> cleanup endpoint")
     request("POST", "/cleanup", expect_status=200)
+    request("POST", "/cleanup?force=true", expect_status=200)
+    request("POST", "/fleet/prune-dead", expect_status=200)
 
     print("==> e2e-api-errors passed")
     return 0

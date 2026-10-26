@@ -607,3 +607,68 @@ table.data tr:last-child td {
   font-size: 0.85rem;
   padding: 0.5rem 0;
 }
+
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.health-badges {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.chip-ok strong {
+  color: var(--ok);
+}
+
+.chip-err strong {
+  color: var(--danger);
+}
+
+button.active-btn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cleaned-tag {
+  margin-left: 0.35rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 0.08rem 0.35rem;
+  border-radius: 4px;
+}
+
+.task-table-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.badge-task-DONE {
+  background: rgba(92, 219, 149, 0.15);
+  color: var(--ok);
+}
+.badge-task-PUBLISHED {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.badge-task-CREATED {
+  background: rgba(240, 180, 41, 0.2);
+  color: var(--warn);
+}
+.badge-task-FAILED,
+.badge-task-CANCELLED {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--danger);
+}
+
+.inline-job-link {
+  padding: 0 0.25rem;
+  margin-left: 0.25rem;
+  text-decoration: underline;
+}

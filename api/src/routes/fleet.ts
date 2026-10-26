@@ -3,7 +3,7 @@ import type pg from "pg";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { pushEvent } from "../events.js";
-import { buildWorkerStats } from "../stats/workers.js";
+import { buildWorkerStats, clearDeadWorkers } from "../stats/workers.js";
 
 const putFleetSchema = z.object({
   desired_workers: z.number().int().min(1).max(32),
@@ -96,6 +96,11 @@ export function fleetRouter(pool: pg.Pool, config: Config): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  router.post("/fleet/prune-dead", (_req, res) => {
+    const removed = clearDeadWorkers(config);
+    res.json({ removed });
   });
 
   return router;

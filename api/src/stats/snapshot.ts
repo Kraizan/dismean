@@ -208,6 +208,7 @@ export async function buildStatsSnapshot(
         job_id: w.job_id,
         task_kind: w.task_kind,
         tasks_done: w.tasks_done,
+        started_at: w.started_at,
         last_heartbeat_at: w.last_heartbeat_at,
         hostname: w.hostname,
         pid: w.pid,

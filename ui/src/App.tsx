@@ -9,6 +9,7 @@ type WorkerRow = {
   job_id: string | null;
   task_kind: string | null;
   tasks_done: number;
+  started_at?: string;
   last_heartbeat_at: string;
   hostname?: string;
   pid?: number;
@@ -53,7 +54,10 @@ type Event = {
   task_id?: string;
   worker_id?: string;
   message?: string;
+  data?: Record<string, unknown>;
 };
+
+type PoolStateEntry = { items: number; files_covered: number };
 
 type JobSummary = {
   id: string;
@@ -69,6 +73,7 @@ type JobSummary = {
   partials_cleaned_at?: string | null;
   progress?: { generation: number; reduction: number };
   tasks?: Record<string, Record<string, number>>;
+  pool_items?: Record<string, PoolStateEntry>;
   timings_ms?: {
     generation: number | null;
     reduction: number | null;
@@ -80,6 +85,24 @@ type JobSummary = {
     generate_tasks: number;
     merge_tasks: number;
   };
+};
+
+type TaskDetail = {
+  id: string;
+  kind: "GENERATE" | "MERGE";
+  status: string;
+  attempt: number;
+  level: number;
+  file_start: number | null;
+  file_count: number | null;
+  input_count: number | null;
+  is_final: boolean;
+  worker_id: string | null;
+  duration_ms: number | null;
+  last_error: string | null;
+  created_at: string;
+  published_at: string | null;
+  completed_at: string | null;
 };
 
 type StatusFilter =
@@ -101,6 +124,16 @@ function formatTime(iso: string): string {
   } catch {
     return "—";
   }
+}
+
+function formatUptime(startedAt?: string): string {
+  if (!startedAt) return "—";
+  const sec = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
 }
 
 function formatBytes(bytes: number): string {
@@ -132,7 +165,12 @@ function eventClass(type: string): string {
   ) {
     return "event-type-fail";
   }
-  if (type.includes("completed") || type === "job_created" || type === "cleanup_ran") {
+  if (
+    type.includes("completed") ||
+    type === "job_created" ||
+    type === "cleanup_ran" ||
+    type === "fleet_scaled"
+  ) {
     return "event-type-ok";
   }
   return "event-type";
@@ -161,20 +199,25 @@ function ProgressBar({ label, value }: { label: string; value: number }) {
 
 export function App() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [health, setHealth] = useState<{ db: string; amqp: string } | null>(null);
   const [recentJobs, setRecentJobs] = useState<JobSummary[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobSummary | null>(null);
+  const [jobTasks, setJobTasks] = useState<TaskDetail[]>([]);
+  const [taskFilter, setTaskFilter] = useState<"ALL" | "GENERATE" | "MERGE">("ALL");
   const [inputPreviewIdx, setInputPreviewIdx] = useState(0);
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewLabel, setPreviewLabel] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [eventFilter, setEventFilter] = useState<string>("");
+  const [eventCategory, setEventCategory] = useState<"ALL" | "JOBS" | "WORKERS" | "ERRORS">("ALL");
   const afterIdRef = useRef(0);
   const [f, setF] = useState(12);
   const [c, setC] = useState(5);
   const [desiredW, setDesiredW] = useState<number>(4);
   const [wEdited, setWEdited] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -197,31 +240,45 @@ export function App() {
   }, [f, c]);
 
   const refreshJobs = useCallback(async () => {
-    const res = await fetch(`${API}/jobs?limit=30`);
+    const res = await fetch(`${API}/jobs?limit=50`);
     if (!res.ok) return;
     const data = await res.json();
     setRecentJobs(data.jobs ?? []);
   }, []);
 
   const refreshSelectedJob = useCallback(async (id: string) => {
-    const res = await fetch(`${API}/jobs/${id}`);
-    if (!res.ok) {
-      if (res.status === 404) {
+    const [jobRes, tasksRes] = await Promise.all([
+      fetch(`${API}/jobs/${id}`),
+      fetch(`${API}/jobs/${id}/tasks`),
+    ]);
+    if (!jobRes.ok) {
+      if (jobRes.status === 404) {
         setSelectedJobId(null);
         setSelectedJob(null);
+        setJobTasks([]);
       }
       return;
     }
-    const data = (await res.json()) as JobSummary;
+    const data = (await jobRes.json()) as JobSummary;
     setSelectedJob(data);
+    if (tasksRes.ok) {
+      const tData = (await tasksRes.json()) as { tasks: TaskDetail[] };
+      setJobTasks(tData.tasks ?? []);
+    }
   }, []);
 
   const poll = useCallback(async () => {
     try {
-      const s = await fetch(`${API}/stats`).then((r) => {
-        if (!r.ok) throw new Error(`stats ${r.status}`);
-        return r.json();
-      });
+      const [sRes, hRes] = await Promise.all([
+        fetch(`${API}/stats`),
+        fetch(`${API}/health`),
+      ]);
+      if (hRes.ok || hRes.status === 503) {
+        const h = await hRes.json().catch(() => null);
+        if (h) setHealth(h);
+      }
+      if (!sRes.ok) throw new Error(`stats ${sRes.status}`);
+      const s = (await sRes.json()) as Stats;
       setStats(s);
       if (!wEdited && typeof s.workers?.desired === "number") {
         setDesiredW(s.workers.desired);
@@ -242,19 +299,20 @@ export function App() {
       setError(e instanceof Error ? e.message : "API unreachable");
       setStats(null);
     }
-  }, [refreshJobs, refreshSelectedJob, selectedJobId]);
+  }, [refreshJobs, refreshSelectedJob, selectedJobId, wEdited]);
 
   useEffect(() => {
-    const t = setInterval(() => void poll(), 1000);
     void poll();
+    if (paused) return;
+    const t = setInterval(() => void poll(), 1000);
     return () => clearInterval(t);
-  }, [poll]);
+  }, [poll, paused]);
 
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => {
       setToast((cur) => (cur === msg ? null : cur));
-    }, 4000);
+    }, 4500);
   }
 
   async function submitJob(submitF: number, submitC: number) {
@@ -277,6 +335,7 @@ export function App() {
       setPreviewText(null);
       showToast(`Created job ${shortId(created.id)} (F=${submitF}, C=${submitC})`);
       await refreshJobs();
+      await refreshSelectedJob(created.id);
       void poll();
     } finally {
       setSubmitting(false);
@@ -300,6 +359,18 @@ export function App() {
     if (selectedJobId === id) await refreshSelectedJob(id);
   }
 
+  async function cancelAllActive() {
+    const activeIds = (stats?.active_jobs ?? []).map((j) => j.id);
+    if (!activeIds.length) return;
+    setError(null);
+    await Promise.all(
+      activeIds.map((id) => fetch(`${API}/jobs/${id}/cancel`, { method: "POST" })),
+    );
+    showToast(`Cancelled ${activeIds.length} active job(s)`);
+    await refreshJobs();
+    void poll();
+  }
+
   async function deleteJob(id: string) {
     setError(null);
     const res = await fetch(`${API}/jobs/${id}`, { method: "DELETE" });
@@ -310,15 +381,43 @@ export function App() {
       if (selectedJobId === id) {
         setSelectedJobId(null);
         setSelectedJob(null);
+        setJobTasks([]);
         setPreviewText(null);
       }
     }
     await refreshJobs();
   }
 
-  async function runCleanup() {
+  async function deleteAllFinished() {
+    const finished = recentJobs.filter(
+      (j) => j.status !== "GENERATING" && j.status !== "REDUCING",
+    );
+    if (!finished.length) return;
     setError(null);
-    const res = await fetch(`${API}/cleanup`, { method: "POST" });
+    await Promise.all(
+      finished.map((j) => fetch(`${API}/jobs/${j.id}`, { method: "DELETE" })),
+    );
+    if (
+      selectedJobId &&
+      finished.some((j) => j.id === selectedJobId)
+    ) {
+      setSelectedJobId(null);
+      setSelectedJob(null);
+      setJobTasks([]);
+      setPreviewText(null);
+    }
+    showToast(`Deleted ${finished.length} finished job(s)`);
+    await refreshJobs();
+    void poll();
+  }
+
+  async function runCleanup(force: boolean) {
+    setError(null);
+    const res = await fetch(`${API}/cleanup${force ? "?force=true" : ""}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
     if (!res.ok) {
       setError(`Cleanup failed (${res.status})`);
       return;
@@ -329,7 +428,7 @@ export function App() {
       bytes_freed: number;
     };
     showToast(
-      `Cleanup: ${data.jobs_cleaned} jobs, ${data.files_deleted} files (${formatBytes(data.bytes_freed)} freed)`,
+      `${force ? "Force cleanup" : "Cleanup"}: ${data.jobs_cleaned} jobs, ${data.files_deleted} files (${formatBytes(data.bytes_freed)} freed)`,
     );
     void poll();
   }
@@ -353,6 +452,15 @@ export function App() {
     void poll();
   }
 
+  async function pruneDeadWorkers() {
+    setError(null);
+    const res = await fetch(`${API}/fleet/prune-dead`, { method: "POST" });
+    if (!res.ok) return;
+    const data = (await res.json()) as { removed: number };
+    showToast(`Removed ${data.removed} dead worker entry(s)`);
+    void poll();
+  }
+
   async function loadCsvPreview(url: string, label: string) {
     setError(null);
     const res = await fetch(url);
@@ -364,8 +472,8 @@ export function App() {
     const text = (await res.text()).trim();
     const values = text.split(",");
     const shown =
-      values.length > 24
-        ? `${values.slice(0, 24).join(", ")} … (${values.length} values total)`
+      values.length > 32
+        ? `${values.slice(0, 32).join(", ")} … (${values.length} values total)`
         : values.join(", ");
     setPreviewLabel(label);
     setPreviewText(shown);
@@ -401,29 +509,85 @@ export function App() {
     });
   }, [recentJobs, stats?.active_jobs, statusFilter]);
 
+  const filteredTasks = useMemo(() => {
+    if (taskFilter === "ALL") return jobTasks;
+    return jobTasks.filter((t) => t.kind === taskFilter);
+  }, [jobTasks, taskFilter]);
+
   const filteredEvents = useMemo(() => {
     const q = eventFilter.trim().toLowerCase();
     const base = [...events].reverse();
-    if (!q) return base;
-    return base.filter(
-      (ev) =>
+    return base.filter((ev) => {
+      if (eventCategory === "JOBS" && !ev.type.startsWith("job_") && ev.type !== "generation_completed") {
+        return false;
+      }
+      if (eventCategory === "WORKERS" && !ev.type.startsWith("worker_") && ev.type !== "fleet_scaled") {
+        return false;
+      }
+      if (
+        eventCategory === "ERRORS" &&
+        !ev.type.includes("fail") &&
+        !ev.type.includes("dead") &&
+        ev.type !== "task_retry" &&
+        ev.type !== "invalid_message"
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
         ev.type.toLowerCase().includes(q) ||
         (ev.job_id && ev.job_id.toLowerCase().includes(q)) ||
         (ev.worker_id && ev.worker_id.toLowerCase().includes(q)) ||
-        (ev.message && ev.message.toLowerCase().includes(q)),
-    );
-  }, [events, eventFilter]);
+        (ev.message && ev.message.toLowerCase().includes(q))
+      );
+    });
+  }, [events, eventFilter, eventCategory]);
+
+  const hasActiveJobs = (stats?.active_jobs.length ?? 0) > 0;
+  const hasFinishedJobs = recentJobs.some(
+    (j) => j.status !== "GENERATING" && j.status !== "REDUCING",
+  );
 
   return (
     <div className="app">
       <header className="header">
         <div className="brand">
           <h1>dismean</h1>
-          <p>Distributed per-index mean · local control plane (W workers, ≤5 files/task)</p>
+          <p>
+            Distributed per-index mean · local control plane (W={stats?.workers.desired ?? desiredW}, ≤5 files/task)
+          </p>
         </div>
-        <div className={`live-pill ${connected ? "ok" : "err"}`}>
-          <span className="dot" aria-hidden />
-          {connected ? `Live · ${stats?.at ? formatTime(stats.at) : "synced"}` : "Disconnected"}
+        <div className="header-controls">
+          {health && (
+            <div className="health-badges" aria-label="Infrastructure health">
+              <span className={`chip ${health.db === "ok" ? "chip-ok" : "chip-err"}`}>
+                PG: <strong>{health.db}</strong>
+              </span>
+              <span className={`chip ${health.amqp === "ok" ? "chip-ok" : "chip-err"}`}>
+                AMQP: <strong>{health.amqp}</strong>
+              </span>
+            </div>
+          )}
+          <button
+            type="button"
+            className="secondary btn-sm"
+            onClick={() => setPaused((p) => !p)}
+          >
+            {paused ? "Resume polling" : "Pause (1s)"}
+          </button>
+          <button
+            type="button"
+            className="secondary btn-sm"
+            onClick={() => void poll()}
+          >
+            Refresh now
+          </button>
+          <div className={`live-pill ${connected ? "ok" : "err"}`}>
+            <span className="dot" aria-hidden />
+            {connected
+              ? `${paused ? "Paused" : "Live"} · ${stats?.at ? formatTime(stats.at) : "synced"}`
+              : "Disconnected"}
+          </div>
         </div>
       </header>
 
@@ -463,7 +627,9 @@ export function App() {
             {stats ? stats.queue.tasks_ready : "—"}
           </div>
           <div className="kpi-sub">
-            {stats ? `${stats.queue.tasks_unacked} in flight · ${stats.queue.tasks_dead ?? 0} DLQ` : "…"}
+            {stats
+              ? `${stats.queue.tasks_unacked} in flight · ${stats.queue.tasks_dead ?? 0} DLQ`
+              : "…"}
           </div>
         </div>
         <div className="kpi">
@@ -496,7 +662,7 @@ export function App() {
 
       <section className="card submit-card" style={{ marginBottom: "1rem" }}>
         <div className="submit-header">
-          <h2>Submit job</h2>
+          <h2>Submit job & storage ops</h2>
           <div className="presets">
             <span className="preset-label">Presets:</span>
             <button
@@ -564,11 +730,20 @@ export function App() {
             <button
               type="button"
               className="secondary"
-              onClick={() => void runCleanup()}
+              onClick={() => void runCleanup(false)}
               disabled={!connected}
-              title="Sweep partials of finished jobs past retention"
+              title="Delete partials of jobs finished > 1h ago"
             >
-              Cleanup old data
+              Cleanup (&gt;1h)
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void runCleanup(true)}
+              disabled={!connected}
+              title="Immediately delete partials of all finished jobs"
+            >
+              Force cleanup partials
             </button>
           </div>
           <div className="estimate-pill">
@@ -586,36 +761,57 @@ export function App() {
 
       {stats && (
         <section className="card" style={{ marginBottom: "1rem" }}>
-          <h2>Filter jobs by status</h2>
-          <div className="status-row">
-            <button
-              type="button"
-              className={`chip chip-btn ${statusFilter === "ALL" ? "active" : ""}`}
-              onClick={() => setStatusFilter("ALL")}
-            >
-              <strong>ALL</strong>
-              {Object.values(jobCounts).reduce((a, b) => a + b, 0)}
-            </button>
-            {(
-              [
-                "WAITING",
-                "GENERATING",
-                "REDUCING",
-                "COMPLETED",
-                "FAILED",
-                "CANCELLED",
-              ] as const
-            ).map((key) => (
+          <div className="submit-header" style={{ marginBottom: 0 }}>
+            <div className="status-row">
               <button
                 type="button"
-                className={`chip chip-btn ${statusFilter === key ? "active" : ""}`}
-                key={key}
-                onClick={() => setStatusFilter(key)}
+                className={`chip chip-btn ${statusFilter === "ALL" ? "active" : ""}`}
+                onClick={() => setStatusFilter("ALL")}
               >
-                <strong>{key}</strong>
-                {jobCounts[key] ?? 0}
+                <strong>ALL</strong>
+                {Object.values(jobCounts).reduce((a, b) => a + b, 0)}
               </button>
-            ))}
+              {(
+                [
+                  "WAITING",
+                  "GENERATING",
+                  "REDUCING",
+                  "COMPLETED",
+                  "FAILED",
+                  "CANCELLED",
+                ] as const
+              ).map((key) => (
+                <button
+                  type="button"
+                  className={`chip chip-btn ${statusFilter === key ? "active" : ""}`}
+                  key={key}
+                  onClick={() => setStatusFilter(key)}
+                >
+                  <strong>{key}</strong>
+                  {jobCounts[key] ?? 0}
+                </button>
+              ))}
+            </div>
+            <div className="presets">
+              {hasActiveJobs && (
+                <button
+                  type="button"
+                  className="danger btn-sm"
+                  onClick={() => void cancelAllActive()}
+                >
+                  Cancel all active
+                </button>
+              )}
+              {hasFinishedJobs && (
+                <button
+                  type="button"
+                  className="secondary btn-sm"
+                  onClick={() => void deleteAllFinished()}
+                >
+                  Delete finished shown
+                </button>
+              )}
+            </div>
           </div>
         </section>
       )}
@@ -629,7 +825,29 @@ export function App() {
                 {stats?.workers.desired ?? desiredW} target)
               </h2>
               <div className="input-dl">
-                <span className="preset-label">Target W (1–32):</span>
+                {(stats?.workers.dead ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    className="danger btn-sm"
+                    onClick={() => void pruneDeadWorkers()}
+                  >
+                    Clear dead ({stats?.workers.dead})
+                  </button>
+                )}
+                <span className="preset-label">Quick W:</span>
+                {[1, 2, 4, 8].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={`secondary btn-sm ${
+                      (stats?.workers.desired ?? desiredW) === n ? "active-btn" : ""
+                    }`}
+                    disabled={!connected}
+                    onClick={() => void scaleFleet(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
                 <input
                   type="number"
                   min={1}
@@ -639,7 +857,7 @@ export function App() {
                     setWEdited(true);
                     setDesiredW(+e.target.value);
                   }}
-                  style={{ width: "4.2rem" }}
+                  style={{ width: "4rem" }}
                   aria-label="Target workers W"
                 />
                 <button
@@ -664,6 +882,7 @@ export function App() {
                       <th>State</th>
                       <th>Current task</th>
                       <th>Done</th>
+                      <th>Uptime</th>
                       <th>Heartbeat</th>
                     </tr>
                   </thead>
@@ -684,6 +903,7 @@ export function App() {
                           {w.job_id ? ` · ${shortId(w.job_id)}` : ""}
                         </td>
                         <td>{w.tasks_done}</td>
+                        <td className="mono">{formatUptime(w.started_at)}</td>
                         <td className="mono">{formatTime(w.last_heartbeat_at)}</td>
                       </tr>
                     ))}
@@ -710,7 +930,7 @@ export function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {mergedJobs.slice(0, 15).map((j) => {
+                    {mergedJobs.slice(0, 20).map((j) => {
                       const progress = j.progress;
                       const status = j.status;
                       const active =
@@ -735,6 +955,11 @@ export function App() {
                               {status}
                               {j.waiting ? " · wait" : ""}
                             </span>
+                            {j.partials_cleaned_at && (
+                              <span className="cleaned-tag" title="Partials cleaned">
+                                cleaned
+                              </span>
+                            )}
                           </td>
                           <td className="mono">
                             F={j.f} C={j.c}
@@ -825,6 +1050,7 @@ export function App() {
                   onClick={() => {
                     setSelectedJobId(null);
                     setSelectedJob(null);
+                    setJobTasks([]);
                     setPreviewText(null);
                   }}
                 >
@@ -861,15 +1087,21 @@ export function App() {
                   </div>
                 </div>
                 <div>
-                  <span className="kpi-label">GENERATE tasks</span>
+                  <span className="kpi-label">Pool items (files covered)</span>
                   <div className="mono">
-                    {JSON.stringify(selectedJob.tasks?.GENERATE ?? {})}
+                    READY {selectedJob.pool_items?.READY?.items ?? 0} (
+                    {selectedJob.pool_items?.READY?.files_covered ?? 0}) · RSVD{" "}
+                    {selectedJob.pool_items?.RESERVED?.items ?? 0} (
+                    {selectedJob.pool_items?.RESERVED?.files_covered ?? 0}) · DONE{" "}
+                    {selectedJob.pool_items?.CONSUMED?.items ?? 0}
                   </div>
                 </div>
                 <div>
-                  <span className="kpi-label">MERGE tasks</span>
+                  <span className="kpi-label">Partials cleanup</span>
                   <div className="mono">
-                    {JSON.stringify(selectedJob.tasks?.MERGE ?? {})}
+                    {selectedJob.partials_cleaned_at
+                      ? `Cleaned at ${formatTime(selectedJob.partials_cleaned_at)}`
+                      : "Retained on disk"}
                   </div>
                 </div>
               </div>
@@ -959,20 +1191,94 @@ export function App() {
                   <div className="mono">{previewText}</div>
                 </div>
               )}
+
+              <div className="task-section">
+                <div className="submit-header" style={{ marginTop: "0.9rem" }}>
+                  <h2>Task breakdown ({filteredTasks.length})</h2>
+                  <div className="presets">
+                    {(["ALL", "GENERATE", "MERGE"] as const).map((k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        className={`chip chip-btn ${taskFilter === k ? "active" : ""}`}
+                        onClick={() => setTaskFilter(k)}
+                      >
+                        {k}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="table-wrap task-table-wrap">
+                  <table className="data">
+                    <thead>
+                      <tr>
+                        <th>Task</th>
+                        <th>Kind / Lvl</th>
+                        <th>Scope</th>
+                        <th>Status</th>
+                        <th>Worker</th>
+                        <th>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTasks.map((t) => (
+                        <tr key={t.id}>
+                          <td className="mono" title={t.id}>
+                            {shortId(t.id)}
+                            {t.attempt > 1 ? ` (a${t.attempt})` : ""}
+                          </td>
+                          <td className="mono">
+                            {t.kind} L{t.level}
+                            {t.is_final ? " ★" : ""}
+                          </td>
+                          <td className="mono">
+                            {t.kind === "GENERATE"
+                              ? `files ${t.file_start}..${(t.file_start ?? 0) + (t.file_count ?? 1) - 1}`
+                              : `inputs=${t.input_count}`}
+                          </td>
+                          <td>
+                            <span className={`badge badge-task-${t.status}`}>
+                              {t.status}
+                            </span>
+                          </td>
+                          <td className="mono">
+                            {t.worker_id
+                              ? t.worker_id.replace(/\.local-/, "-")
+                              : "—"}
+                          </td>
+                          <td className="mono">{formatMs(t.duration_ms)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </section>
           )}
 
           <section className="card">
             <div className="submit-header">
               <h2>Event stream ({filteredEvents.length})</h2>
-              <input
-                type="search"
-                className="search-input"
-                placeholder="Filter events (type, job, worker)…"
-                value={eventFilter}
-                onChange={(e) => setEventFilter(e.target.value)}
-                aria-label="Filter events"
-              />
+              <div className="presets">
+                {(["ALL", "JOBS", "WORKERS", "ERRORS"] as const).map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`chip chip-btn ${eventCategory === cat ? "active" : ""}`}
+                    onClick={() => setEventCategory(cat)}
+                  >
+                    {cat}
+                  </button>
+                ))}
+                <input
+                  type="search"
+                  className="search-input"
+                  placeholder="Search events…"
+                  value={eventFilter}
+                  onChange={(e) => setEventFilter(e.target.value)}
+                  aria-label="Filter events"
+                />
+              </div>
             </div>
             <div className="event-log">
               {filteredEvents.length === 0 ? (
@@ -984,7 +1290,17 @@ export function App() {
                     <span>
                       <span className={eventClass(ev.type)}>{ev.type}</span>
                       {ev.job_id && (
-                        <span className="mono"> · job {shortId(ev.job_id)}</span>
+                        <button
+                          type="button"
+                          className="ghost mono inline-job-link"
+                          onClick={() => {
+                            setSelectedJobId(ev.job_id!);
+                            setPreviewText(null);
+                            void refreshSelectedJob(ev.job_id!);
+                          }}
+                        >
+                          job {shortId(ev.job_id)}
+                        </button>
                       )}
                       {ev.worker_id && (
                         <span className="mono">

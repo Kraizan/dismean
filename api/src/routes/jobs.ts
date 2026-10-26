@@ -107,8 +107,35 @@ async function reductionProgress(
   return Math.max(0, Math.min(1, 1 - (live - 1) / (job.f - 1)));
 }
 
+async function poolBreakdown(pool: pg.Pool, jobId: string) {
+  const { rows } = await pool.query<{
+    kind: string;
+    state: string;
+    cnt: string;
+    covered: string;
+  }>(
+    `SELECT kind::text, state::text, count(*)::text AS cnt, coalesce(sum(count), 0)::text AS covered
+     FROM items WHERE job_id = $1 GROUP BY kind, state`,
+    [jobId],
+  );
+  const out: Record<string, { items: number; files_covered: number }> = {
+    READY: { items: 0, files_covered: 0 },
+    RESERVED: { items: 0, files_covered: 0 },
+    CONSUMED: { items: 0, files_covered: 0 },
+    DELETED: { items: 0, files_covered: 0 },
+  };
+  for (const r of rows) {
+    const cur = out[r.state] ?? { items: 0, files_covered: 0 };
+    cur.items += Number(r.cnt);
+    cur.files_covered += Number(r.covered);
+    out[r.state] = cur;
+  }
+  return out;
+}
+
 async function formatJob(pool: pg.Pool, job: JobRow) {
   const tasks = await taskCounts(pool, job.id);
+  const pool_items = await poolBreakdown(pool, job.id);
   const timings_ms = await jobTimings(pool, job);
   const estimate = jobEstimate(job.f, job.c);
   const progress = {
@@ -129,6 +156,7 @@ async function formatJob(pool: pg.Pool, job: JobRow) {
     partials_cleaned_at: job.partials_cleaned_at?.toISOString() ?? null,
     progress,
     tasks,
+    pool_items,
     timings_ms,
     estimate,
   };
@@ -230,6 +258,58 @@ export function jobsRouter(
         return;
       }
       res.json(await formatJob(pool, job));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/jobs/:id/tasks", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    try {
+      const { rows: jobRows } = await pool.query<{ id: string }>(
+        `SELECT id FROM jobs WHERE id = $1`,
+        [idCheck.data],
+      );
+      if (jobRows.length === 0) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      const { rows } = await pool.query<{
+        id: string;
+        kind: string;
+        status: string;
+        attempt: number;
+        level: number;
+        file_start: number | null;
+        file_count: number | null;
+        input_count: number | null;
+        is_final: boolean;
+        worker_id: string | null;
+        duration_ms: number | null;
+        last_error: string | null;
+        created_at: Date;
+        published_at: Date | null;
+        completed_at: Date | null;
+      }>(
+        `SELECT id, kind::text, status::text, attempt, level, file_start, file_count,
+                input_count, is_final, worker_id, duration_ms, last_error,
+                created_at, published_at, completed_at
+         FROM tasks WHERE job_id = $1
+         ORDER BY level ASC, file_start ASC NULLS LAST, created_at ASC`,
+        [idCheck.data],
+      );
+      res.json({
+        tasks: rows.map((t) => ({
+          ...t,
+          created_at: t.created_at.toISOString(),
+          published_at: t.published_at?.toISOString() ?? null,
+          completed_at: t.completed_at?.toISOString() ?? null,
+        })),
+      });
     } catch (err) {
       next(err);
     }

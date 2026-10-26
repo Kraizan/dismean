@@ -11,6 +11,7 @@ export interface WorkerSnapshot {
   job_id: string | null;
   task_kind: string | null;
   tasks_done: number;
+  started_at: string;
   last_heartbeat_at: string;
   hostname: string;
   pid: number;
@@ -135,6 +136,7 @@ export function buildWorkerStats(config: Config): {
       job_id: w.job_id,
       task_kind: w.task_kind,
       tasks_done: w.tasks_done,
+      started_at: w.started_at,
       last_heartbeat_at: w.last_heartbeat_at,
       hostname: w.hostname,
       pid: w.pid,
@@ -150,6 +152,19 @@ export function buildWorkerStats(config: Config): {
     dead,
     list,
   };
+}
+
+export function clearDeadWorkers(config: Config): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [id, w] of workers) {
+    const age = now - new Date(w.last_heartbeat_at).getTime();
+    if (age > config.WORKER_STALE_MS) {
+      workers.delete(id);
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 export function isJobBusyOnWorkers(jobId: string, config?: Config): boolean {

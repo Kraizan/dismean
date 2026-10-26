@@ -93,6 +93,11 @@ def main() -> None:
         print("inputs/0.csv mismatch", inp0_vals, inp0_disk)
         sys.exit(1)
 
+    tasks_resp = http("GET", f"/jobs/{job_id}/tasks")
+    if len(tasks_resp.get("tasks", [])) != 6:
+        print("expected 6 tasks (3 GENERATE + 3 MERGE), got", len(tasks_resp.get("tasks", [])))
+        sys.exit(1)
+
     print("==> e2e passed")
 
 

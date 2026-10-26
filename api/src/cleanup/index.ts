@@ -50,17 +50,22 @@ async function deleteTmpFiles(jobDir: string): Promise<number> {
   return deleted;
 }
 
-export async function runCleanup(pool: pg.Pool, config: Config): Promise<{
+export async function runCleanup(
+  pool: pg.Pool,
+  config: Config,
+  options?: { force?: boolean },
+): Promise<{
   jobs_cleaned: number;
   files_deleted: number;
   bytes_freed: number;
 }> {
+  const retentionMs = options?.force ? 0 : config.PARTIAL_RETENTION_MS;
   const { rows } = await pool.query<{ id: string }>(
     `SELECT id FROM jobs
      WHERE status IN ('COMPLETED', 'FAILED', 'CANCELLED')
-       AND finished_at < now() - ($1::bigint * interval '1 millisecond')
+       AND finished_at <= now() - ($1::bigint * interval '1 millisecond')
        AND partials_cleaned_at IS NULL`,
-    [config.PARTIAL_RETENTION_MS],
+    [retentionMs],
   );
 
   let jobsCleaned = 0;

@@ -478,7 +478,8 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 |---|---|---|---|---|
 | `POST` | `/jobs` | `{ "f": int, "c": int }` | `201` job + `estimate` | `400` validation |
 | `GET` | `/jobs` | `?status=&limit=50&offset=0` | `200 { jobs: Job[] }` | — |
-| `GET` | `/jobs/:id` | — | `200` job + progress + task counts | `404` |
+| `GET` | `/jobs/:id` | — | `200` job + progress + task counts + pool items | `404` |
+| `GET` | `/jobs/:id/tasks` | — | `200 { tasks: Task[] }` | `404` |
 | `POST` | `/jobs/:id/cancel` | — | `202` job | `404`, `409` if finished |
 | `DELETE` | `/jobs/:id` | — | `204` (deletes rows and `DATA_DIR/jobs/:id`) | `404`, `409` if active |
 | `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |
@@ -486,7 +487,8 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 | `GET` | `/jobs/:id/inputs/:index.csv` | — | `200 text/csv` (one line) | `404` if not generated |
 | `GET` | `/fleet` | — | `200 { desired_workers, updated_at, workers }` | — |
 | `PUT` | `/fleet` | `{ "desired_workers": 1..32 }` | `200 { desired_workers, updated_at, workers }` | `400` validation |
-| `POST` | `/cleanup` | — | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
+| `POST` | `/fleet/prune-dead` | — | `200 { removed }` (clears stale worker entries from memory) | — |
+| `POST` | `/cleanup` | `?force=true` optional | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
 | `GET` | `/stats` | — | `200` stats snapshot (polled every 1 s by the UI) | — |
 | `GET` | `/events` | `?after_id=&limit=100` | `200 { events: Event[] }` from the in-memory buffer | — |
 | `GET` | `/health` | — | `200 { db: "ok", amqp: "ok" }` | `503` |
