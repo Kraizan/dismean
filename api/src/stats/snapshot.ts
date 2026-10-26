@@ -1,5 +1,6 @@
 import type pg from "pg";
 import type { Config } from "../config.js";
+import { getDesiredWorkers } from "../routes/fleet.js";
 import { isJobBusyOnWorkers, buildWorkerStats } from "./workers.js";
 
 interface QueueStats {
@@ -83,6 +84,7 @@ export async function buildStatsSnapshot(
   config: Config,
 ): Promise<Record<string, unknown>> {
   const workers = buildWorkerStats(config);
+  const fleet = await getDesiredWorkers(pool, config.WORKER_COUNT);
   const queue = await fetchQueueStats(config);
 
   const { rows: outboxRows } = await pool.query<{ count: string }>(
@@ -193,6 +195,7 @@ export async function buildStatsSnapshot(
   return {
     at: new Date().toISOString(),
     workers: {
+      desired: fleet.desired_workers,
       total: workers.total,
       idle: workers.idle,
       busy: workers.busy,

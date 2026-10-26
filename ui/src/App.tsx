@@ -18,6 +18,7 @@ type WorkerRow = {
 type Stats = {
   at: string;
   workers: {
+    desired?: number;
     total: number;
     idle: number;
     busy: number;
@@ -171,6 +172,8 @@ export function App() {
   const afterIdRef = useRef(0);
   const [f, setF] = useState(12);
   const [c, setC] = useState(5);
+  const [desiredW, setDesiredW] = useState<number>(4);
+  const [wEdited, setWEdited] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -220,6 +223,9 @@ export function App() {
         return r.json();
       });
       setStats(s);
+      if (!wEdited && typeof s.workers?.desired === "number") {
+        setDesiredW(s.workers.desired);
+      }
       setError(null);
       await refreshJobs();
       if (selectedJobId) {
@@ -328,6 +334,25 @@ export function App() {
     void poll();
   }
 
+  async function scaleFleet(newW: number) {
+    setError(null);
+    const clamped = Math.max(1, Math.min(32, Math.floor(newW)));
+    setDesiredW(clamped);
+    setWEdited(false);
+    const res = await fetch(`${API}/fleet`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ desired_workers: clamped }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? `Scale failed (${res.status})`);
+      return;
+    }
+    showToast(`Target fleet size set to W=${clamped}`);
+    void poll();
+  }
+
   async function loadCsvPreview(url: string, label: string) {
     setError(null);
     const res = await fetch(url);
@@ -422,13 +447,13 @@ export function App() {
 
       <section className="kpi-grid" aria-label="System overview">
         <div className="kpi">
-          <div className="kpi-label">Workers</div>
+          <div className="kpi-label">Workers (W)</div>
           <div className="kpi-value">
             {stats ? `${stats.workers.busy}/${stats.workers.total}` : "—"}
           </div>
           <div className="kpi-sub">
             {stats
-              ? `${stats.workers.idle} idle · ${stats.workers.dead} dead`
+              ? `target ${stats.workers.desired ?? stats.workers.total} · ${stats.workers.idle} idle · ${stats.workers.dead} dead`
               : "…"}
           </div>
         </div>
@@ -598,7 +623,35 @@ export function App() {
       <div className="layout">
         <div className="stack">
           <section className="card">
-            <h2>Worker fleet ({stats?.workers.total ?? 0})</h2>
+            <div className="submit-header">
+              <h2>
+                Worker fleet ({stats?.workers.total ?? 0} live /{" "}
+                {stats?.workers.desired ?? desiredW} target)
+              </h2>
+              <div className="input-dl">
+                <span className="preset-label">Target W (1–32):</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={desiredW}
+                  onChange={(e) => {
+                    setWEdited(true);
+                    setDesiredW(+e.target.value);
+                  }}
+                  style={{ width: "4.2rem" }}
+                  aria-label="Target workers W"
+                />
+                <button
+                  type="button"
+                  className="secondary btn-sm"
+                  disabled={!connected}
+                  onClick={() => void scaleFleet(desiredW)}
+                >
+                  Apply W
+                </button>
+              </div>
+            </div>
             {!stats?.workers.list.length ? (
               <p className="empty">No workers connected</p>
             ) : (

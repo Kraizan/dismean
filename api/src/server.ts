@@ -10,6 +10,7 @@ import { startCoordinator } from "./coordinator/index.js";
 import { startRelay } from "./relay/index.js";
 import { startCleanupSweep } from "./cleanup/index.js";
 import { jobsRouter } from "./routes/jobs.js";
+import { fleetRouter } from "./routes/fleet.js";
 import { cleanupRouter } from "./routes/cleanup.js";
 import { statsRouter } from "./routes/stats.js";
 import { eventsRouter } from "./routes/events.js";
@@ -21,6 +22,12 @@ async function main(): Promise<void> {
 
   const pool = getPool(config);
   await runMigrations(pool);
+  await pool
+    .query(
+      `INSERT INTO fleet (id, desired_workers) VALUES (1, $1) ON CONFLICT (id) DO NOTHING`,
+      [config.WORKER_COUNT],
+    )
+    .catch(() => {});
 
   const amqpConn = await connectAmqp(config);
   await checkTopology(amqpConn);
@@ -44,6 +51,7 @@ async function main(): Promise<void> {
   app.use(express.json());
 
   app.use(jobsRouter(pool, config, controlCh, relayEmitter));
+  app.use(fleetRouter(pool, config));
   app.use(cleanupRouter(pool, config));
   app.use(statsRouter(pool, config));
   app.use(eventsRouter());

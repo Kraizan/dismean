@@ -41,8 +41,8 @@ What the user gets or sees. Entries are never deleted; a superseded entry is kep
 - **Consequences:** the merge structure can be inspected afterwards, and retries never lose their inputs. Peak disk use happens while a job runs.
 
 ### IPD-008: W fixed at startup
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** W = `WORKER_COUNT`. Configuring W through the API (bonus) is deferred to future-work §4.
+**Status:** Superseded by IPD-015 · **Date:** 2026-10-23
+- W = `WORKER_COUNT` at startup. Replaced by runtime-configurable W via API and UI.
 
 ### IPD-009: No artificial worker slowdown
 **Status:** Accepted · **Date:** 2026-10-23
@@ -80,3 +80,8 @@ What the user gets or sees. Entries are never deleted; a superseded entry is kep
   - Merge work is preferred over generation 2:1 (ITD-020), so a job that has started reducing finishes quickly while others keep generating.
   - No strict per-job fairness.
 - **Consequences:** jobs finish roughly in submission order. A small job submitted during a big job's generation waits behind it (future-work §1).
+
+### IPD-015: Configurable worker count W via API and UI
+**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-008
+- **Decision:** `GET /fleet` and `PUT /fleet {desired_workers}` (`1..32`) read and update target `W` at runtime, and the UI provides a live target-vs-actual control (ITD-032).
+- **Consequences:** both bonus requirements in the problem statement are built end-to-end.

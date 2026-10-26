@@ -68,6 +68,9 @@ echo "==> e2e matrix"
 echo "==> e2e api errors + cancel"
 "$PY" "$ROOT/scripts/e2e-api-errors.py"
 
+echo "==> e2e fleet scaling (configurable W)"
+"$PY" "$ROOT/scripts/e2e-fleet.py"
+
 echo "==> chaos recovery"
 "$PY" "$ROOT/scripts/chaos-recovery.py"
 

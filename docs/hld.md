@@ -27,16 +27,16 @@ flowchart LR
 
 | Component | Does | Must not |
 |---|---|---|
-| **Routes** | Create jobs (job + GENERATE tasks in one statement); list, get, cancel and delete jobs; downloads; `/cleanup`, `/stats`, `/events` | Publish tasks directly |
+| **Routes** | Create jobs (job + GENERATE tasks in one statement); list, get, cancel and delete jobs; downloads; `/fleet`, `/cleanup`, `/stats`, `/events` | Publish tasks directly |
 | **Coordinator** | Single consumer of `dm.coordinator` and `dm.tasks.dead`. In one transaction per message: count generated files, run the barrier, schedule the pool, detect the final merge, retry or fail tasks | Ack before commit; trust paths from workers |
 | **Outbox relay** | Publish `CREATED` tasks with confirms and priority, then mark them `PUBLISHED` | — |
 | **Cleanup** | Every 10 min and on demand: delete partials of finished jobs past the retention window | Touch active jobs |
 | **Stats** | In-memory worker list (from heartbeats) and last-500 event buffer, plus SQL counts and RabbitMQ management stats | — |
 | **`paths`** | Builds every file path | — |
-| **Postgres** | `jobs`, `tasks` (also the outbox), `items` (the pool) | Be reached by workers |
+| **Postgres** | `jobs`, `tasks` (also the outbox), `items` (the pool), `fleet` (desired W) | Be reached by workers |
 | **RabbitMQ** | Delivery, two-level priority, redelivery, consumer timeout, delivery limit and dead-lettering, control broadcast. Topology from `definitions.json` | — |
 | **Worker** | One task at a time: GENERATE or MERGE, atomic writes, publish the result, ack, heartbeat, skip stopped jobs, exit on broker error | Touch Postgres; exceed 5 files; build paths |
-| **Supervisor** | Run `WORKER_COUNT` workers, restart crashed ones, drain on SIGTERM | — |
+| **Supervisor** | Reconcile worker processes to `GET /fleet` target `W` (fallback `WORKER_COUNT`), restart crashed ones, drain on scale-down or SIGTERM | — |
 | **UI** | Submit and manage jobs; dashboard polling every 1 s | — |
 
 `job.stopped` is published by whichever piece stopped the job: the cancel route, or the coordinator when the job fails.

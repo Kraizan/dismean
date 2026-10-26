@@ -109,10 +109,8 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 - **Consequences:** the API needs `DATA_DIR` access, which it already has for downloads.
 
 ### ITD-015: Python supervisor with fixed W
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** the supervisor starts `WORKER_COUNT` workers, restarts any that exit non-zero, and forwards SIGTERM, then waits for them to drain.
-- **Why:** workers live independently of the API. Rejected: the API spawning workers; `docker compose --scale`.
-- **Consequences:** it's already a reconcile loop, so a dynamic W only changes where the target comes from (future-work §4).
+**Status:** Superseded by ITD-032 · **Date:** 2026-10-23
+- The supervisor starts `WORKER_COUNT` workers, restarts any that exit non-zero, and forwards SIGTERM, then waits for them to drain. Replaced by API-configurable W (`GET/PUT /fleet`).
 
 ### ITD-016: Infrastructure via Docker Compose
 **Status:** Accepted (delegated) · **Date:** 2026-10-23
@@ -218,3 +216,9 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 - **Decision:** `dm.coordinator` uses `x-delivery-limit: 1000000` instead of `-1`.
 - **Why:** on `rabbitmq:4-management`, unlimited (`-1`) is not used at import (open-questions V-3); coordinator does not nack in normal operation (ITD-022).
 - **Consequences:** document in LLD; revisit if broker adds supported unlimited quorum limit.
+
+### ITD-032: Configurable W via `fleet` table and supervisor polling
+**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** ITD-015
+- **Decision:** a one-row `fleet(id=1, desired_workers)` table in Postgres stores target `W` (`1..32`, seeded to `WORKER_COUNT`). The API exposes `GET /fleet` and `PUT /fleet {desired_workers}`. The supervisor polls `GET /fleet` every `FLEET_POLL_INTERVAL_S` (1.5 s): scaling up spawns new worker slots; scaling down sends `SIGTERM` to excess slots so they stop consuming, finish any in-flight task, emit a `STOPPED` heartbeat, and exit cleanly.
+- **Why:** workers remain decoupled from the API process (invariant 1: workers still never touch Postgres; only the supervisor polls the HTTP API).
+- **Consequences:** dynamic scaling at runtime with zero lost work.

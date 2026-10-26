@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-check RabbitMQ assumptions from docs/open-questions.md (V-1–V-4)."""
+"""Verify RabbitMQ assumptions from docs/open-questions.md (V-1–V-4)."""
 import base64
 import json
 import os
@@ -7,7 +7,10 @@ import sys
 import urllib.request
 from urllib.parse import urlparse
 
+import pika
+
 MGMT = os.environ.get("RABBITMQ_MGMT_URL", "http://guest:guest@localhost:15672").rstrip("/")
+AMQP_URL = os.environ.get("AMQP_URL", "amqp://guest:guest@localhost:5672/")
 
 
 def _mgmt_base_and_auth() -> tuple[str, str | None]:
@@ -33,6 +36,58 @@ def get_queue(name: str) -> dict:
         return json.loads(resp.read().decode())
 
 
+def verify_quorum_priority() -> list[str]:
+    """V-1: Verify high-priority (9) messages preempt normal (0) on a RabbitMQ 4 quorum queue."""
+    errors: list[str] = []
+    conn = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
+    try:
+        ch = conn.channel()
+        q = "dm.verify.v1.priority"
+        try:
+            ch.queue_delete(queue=q)
+        except Exception:
+            ch = conn.channel()
+        ch.queue_declare(queue=q, durable=True, arguments={"x-queue-type": "quorum"})
+        for i in range(6):
+            ch.basic_publish(
+                "",
+                q,
+                f"L{i}".encode(),
+                pika.BasicProperties(priority=0, delivery_mode=2),
+            )
+        for i in range(6):
+            ch.basic_publish(
+                "",
+                q,
+                f"H{i}".encode(),
+                pika.BasicProperties(priority=9, delivery_mode=2),
+            )
+        ch.basic_qos(prefetch_count=1)
+        out: list[str] = []
+        for method, _props, body in ch.consume(q, inactivity_timeout=2.0):
+            if method is None:
+                break
+            out.append(body.decode())
+            ch.basic_ack(method.delivery_tag)
+            if len(out) == 12:
+                break
+        ch.cancel()
+        ch.queue_delete(queue=q)
+
+        if len(out) != 12:
+            errors.append(f"V-1: expected 12 messages from quorum queue, got {len(out)}")
+        else:
+            # First 6 deliveries must prioritize high-priority messages over normal backlog
+            high_in_first_half = sum(1 for m in out[:6] if m.startswith("H"))
+            if high_in_first_half < 4:
+                errors.append(
+                    f"V-1: quorum priority did not preempt normal messages (order={out})"
+                )
+    finally:
+        conn.close()
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
     tasks = get_queue("dm.tasks")
@@ -56,9 +111,11 @@ def main() -> int:
     if dead.get("name") != "dm.tasks.dead":
         errors.append("V-4: dm.tasks.dead queue missing")
 
-    # V-1: quorum task queue (priority is message property; 2:1 ratio is runtime — not asserted here)
+    # V-1: quorum task queue + runtime priority preemption test
     if args.get("x-queue-type") != "quorum":
         errors.append("V-1: dm.tasks is not a quorum queue")
+    else:
+        errors.extend(verify_quorum_priority())
 
     if errors:
         for e in errors:
@@ -66,10 +123,9 @@ def main() -> int:
         return 1
 
     print(
-        "ok RabbitMQ: quorum dm.tasks, consumer-timeout 900000, "
+        "ok RabbitMQ V-1..V-4: quorum priority preemption verified, consumer-timeout 900000, "
         "coordinator delivery-limit 1000000, DLX -> dm.tasks.dead"
     )
-    print("note V-1 (2:1 priority delivery) assumed per ITD-020 on RabbitMQ 4.x quorum queues")
     return 0
 
 

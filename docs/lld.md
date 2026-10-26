@@ -99,6 +99,12 @@ CREATE TABLE items (
 );
 CREATE INDEX items_pool     ON items (job_id, created_at, id) WHERE state = 'READY';
 CREATE INDEX items_reserved ON items (reserved_by) WHERE state = 'RESERVED';
+
+CREATE TABLE fleet (
+  id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  desired_workers smallint NOT NULL DEFAULT 4 CHECK (desired_workers BETWEEN 1 AND 32),
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
 ```
 
 Worker state and the event log are kept in API memory, not in the database (ITD-024, §10.3).
@@ -459,8 +465,10 @@ def atomic_save_npy(path, arr):                   # no fsync (ITD-026)
 ## 9. Supervisor
 
 ```text
-read WORKER_COUNT; spawn `python -m dismean_worker.worker` × W with WORKER_INDEX = 0..W-1
-every 1 s: reap children; restart any that exited non-zero (exponential backoff capped at 30 s per slot)
+seed target W from WORKER_COUNT; poll GET /fleet every FLEET_POLL_INTERVAL_S (1.5 s)
+scale up: spawn `python -m dismean_worker.worker` for new slots 0..W-1
+scale down: send SIGTERM to slots >= W so they stop consuming, finish in-flight work, and exit 0
+every 0.5 s: reap children; restart any slot < W that exited non-zero (per-slot exponential backoff capped at 30 s)
 SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL the rest; exit
 ```
 
@@ -476,6 +484,8 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 | `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |
 | `GET` | `/jobs/:id/result.npy` | — | `200 application/octet-stream` | `404`, `409` |
 | `GET` | `/jobs/:id/inputs/:index.csv` | — | `200 text/csv` (one line) | `404` if not generated |
+| `GET` | `/fleet` | — | `200 { desired_workers, updated_at, workers }` | — |
+| `PUT` | `/fleet` | `{ "desired_workers": 1..32 }` | `200 { desired_workers, updated_at, workers }` | `400` validation |
 | `POST` | `/cleanup` | — | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
 | `GET` | `/stats` | — | `200` stats snapshot (polled every 1 s by the UI) | — |
 | `GET` | `/events` | `?after_id=&limit=100` | `200 { events: Event[] }` from the in-memory buffer | — |

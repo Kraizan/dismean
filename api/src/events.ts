@@ -16,6 +16,7 @@ export type EventType =
   | "worker_started"
   | "worker_stopped"
   | "worker_dead"
+  | "fleet_scaled"
   | "cleanup_ran";
 
 export interface AppEvent {

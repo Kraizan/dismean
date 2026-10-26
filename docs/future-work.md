@@ -20,14 +20,8 @@ Designed but not built. Each entry says when to build it and how.
 2. **Shard by `job_id`:** a consistent-hash exchange in front of K coordinator queues, one coordinator each. Each job is still handled serially by one instance.
 3. **Workers write the DB themselves:** this breaks invariant 1, so it needs a user-approved ITD.
 
-## 4. Configurable W through the API
-**When:** the bonus is wanted (IPD-008).
-- `PUT /fleet {desired_workers}` stores the target in a one-row `fleet` table. `GET /fleet` returns the target and live counts.
-- The supervisor polls `GET /fleet` every 1–2 s and reconciles.
-  - **Scale up:** spawn workers.
-  - **Scale down:** idle workers first (SIGTERM). Then the newest busy workers drain: stop consuming, finish, ack, exit. No work is lost.
-- The UI gets a number input and a target-vs-actual display.
-- **Production:** set `replicas` / `desiredCount`, or KEDA's min/max.
+## 4. Configurable W through the API (Built — ITD-032, IPD-015)
+- Built in `002_fleet.sql`, `api/src/routes/fleet.ts`, `worker/src/dismean_worker/supervisor.py`, and the UI fleet card.
 
 ## 5. Faster hang detection
 **When:** about 15 minutes (ITD-008) is too slow.
