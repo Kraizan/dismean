@@ -5,6 +5,7 @@ export type TaskIoFile = {
   count: number;
   item_id: string | null;
   item_state: string | null;
+  produced_by?: string | null;
 };
 
 export type TaskGraphTask = {
@@ -42,8 +43,11 @@ export function csvDownloadUrl(
   if (file.kind === "INPUT" && file.file_index != null) {
     return `${apiBase}/jobs/${jobId}/inputs/${file.file_index}.csv`;
   }
-  if (file.kind === "PARTIAL" && mergeTaskId) {
-    return `${apiBase}/jobs/${jobId}/partials/${mergeTaskId}.csv`;
+  if (file.kind === "PARTIAL") {
+    const partialOwner = file.produced_by ?? mergeTaskId;
+    if (partialOwner) {
+      return `${apiBase}/jobs/${jobId}/partials/${partialOwner}.csv`;
+    }
   }
   if (file.kind === "RESULT" && file.path.endsWith(".csv")) {
     return `${apiBase}/jobs/${jobId}/result.csv`;

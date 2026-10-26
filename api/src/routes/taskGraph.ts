@@ -8,6 +8,7 @@ export type TaskIoFile = {
   count: number;
   item_id: string | null;
   item_state: string | null;
+  produced_by?: string | null;
 };
 
 export type TaskGraphTask = {
@@ -142,6 +143,7 @@ export function buildTaskGraph(
           count: it.count,
           item_id: it.id,
           item_state: it.state,
+          produced_by: it.produced_by,
         });
         let parent: string | null = it.produced_by;
         if (!parent && it.kind === "INPUT") {
@@ -167,6 +169,7 @@ export function buildTaskGraph(
           count: produced.count,
           item_id: produced.id,
           item_state: produced.state,
+          produced_by: t.id,
         });
       } else if (t.is_final && t.status === "DONE" && jobStatus === "COMPLETED") {
         const rp = paths.resultPaths(jobId);
@@ -194,6 +197,7 @@ export function buildTaskGraph(
           count: t.input_count ?? 0,
           item_id: produced?.id ?? null,
           item_state: produced?.state ?? null,
+          produced_by: t.id,
         });
       }
     }

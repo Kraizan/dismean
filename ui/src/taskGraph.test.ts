@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDisplayGraph,
+  csvDownloadUrl,
   edgePathBetweenNodes,
   GENERATION_HUB_ID,
   groupTasksByLevel,
@@ -149,5 +150,26 @@ describe("buildDisplayGraph", () => {
     expect(display.tasks.filter((t) => t.kind === "GENERATE")).toHaveLength(1);
     expect(display.tasks[0]!.id).toBe(GENERATION_HUB_ID);
     expect(display.edges).toEqual([{ from: GENERATION_HUB_ID, to: "m1" }]);
+  });
+});
+
+describe("csvDownloadUrl", () => {
+  it("uses produced_by for PARTIAL inputs so final merge previews upstream partials", () => {
+    expect(
+      csvDownloadUrl(
+        "/api",
+        "job1",
+        {
+          kind: "PARTIAL",
+          path: "jobs/job1/partials/m_leaf.npy",
+          file_index: null,
+          count: 5,
+          item_id: "it1",
+          item_state: "CONSUMED",
+          produced_by: "m_leaf",
+        },
+        "m_final",
+      ),
+    ).toBe("/api/jobs/job1/partials/m_leaf.csv");
   });
 });

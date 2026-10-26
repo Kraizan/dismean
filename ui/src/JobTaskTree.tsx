@@ -239,6 +239,14 @@ function TaskGraphCanvas({
     requestAnimationFrame(() => applyFit());
   }, [collapseGenerate, applyFit]);
 
+  useEffect(() => {
+    if (!selectedTaskId || !collapseGenerate) return;
+    const t = graph.tasks.find((x) => x.id === selectedTaskId);
+    if (t?.kind === "GENERATE") {
+      setCollapseGenerate(false);
+    }
+  }, [selectedTaskId, collapseGenerate, graph.tasks]);
+
   const nudgeZoom = (delta: number) => {
     setZoom((z) =>
       Math.min(1.5, Math.max(0.15, Math.round((z + delta) * 100) / 100)),
@@ -425,6 +433,8 @@ export function JobTaskTree({
   selectedTaskId,
   onSelectTask,
   onPreviewCsv,
+  previewLabel,
+  previewText,
   presentation = "inline",
 }: {
   jobId: string;
@@ -432,6 +442,8 @@ export function JobTaskTree({
   selectedTaskId: string | null;
   onSelectTask: (id: string | null) => void;
   onPreviewCsv: (url: string, label: string) => void;
+  previewLabel?: string | null;
+  previewText?: string | null;
   presentation?: "inline" | "modal";
 }) {
   const selected = graph.tasks.find((t) => t.id === selectedTaskId) ?? null;
@@ -556,6 +568,12 @@ export function JobTaskTree({
               onPreview={onPreviewCsv}
             />
           </div>
+          {previewText && (
+            <div className="preview-box compact">
+              <div className="kpi-label">{previewLabel}</div>
+              <div className="mono">{previewText}</div>
+            </div>
+          )}
         </div>
       )}
     </div>

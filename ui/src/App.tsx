@@ -465,10 +465,12 @@ export function App() {
               aria-label="Filter jobs"
             >
               <option value="ALL">All</option>
+              <option value="WAITING">Waiting</option>
               <option value="GENERATING">Generating</option>
               <option value="REDUCING">Reducing</option>
               <option value="COMPLETED">Completed</option>
               <option value="FAILED">Failed</option>
+              <option value="CANCELLED">Cancelled</option>
             </select>
           </div>
 
@@ -762,6 +764,8 @@ export function App() {
                       onPreviewCsv={(url, label) =>
                         void loadCsvPreview(url, label)
                       }
+                      previewLabel={previewLabel}
+                      previewText={previewText}
                     />
                   </TaskGraphModal>
                 )}
