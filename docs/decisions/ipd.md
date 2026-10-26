@@ -88,3 +88,9 @@ What the user gets or sees. Entries are never deleted; a superseded entry is kep
 **Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-008
 - **Decision:** `GET /fleet` and `PUT /fleet {desired_workers}` (`1..32`) read and update target `W` at runtime, and the UI provides a live target-vs-actual control (ITD-032).
 - **Consequences:** both bonus requirements in the problem statement are built end-to-end.
+
+### IPD-017: Job task tree in the UI
+**Status:** Accepted (delegated) · **Date:** 2026-10-26
+- **Decision:** two-pane UI: job list + submit on the left, job summary on the right. **Open task graph** launches a modal (backdrop, Esc/close) with the full **DAG**: toolbar zoom (−/+, **Fit**), **Collapse generation** (default when &gt;6 GENERATE tasks), **Focus path** (trim to selected task’s lineage), **All edges**. Graph uses most of the modal; task detail (I/O, CSV preview) in a side column when a node is selected (`GET /jobs/:id/task-graph`). Fleet scale, cleanup, and cancel-all under collapsed **Operations**.
+- **Why:** keep the main job view light while giving the reduction graph room; KPI strip, worker table, and event log removed from the default view.
+- **Consequences:** expand generation via hub click or uncheck collapse; `/jobs/:id/tasks` and `GET /events` remain for scripts.

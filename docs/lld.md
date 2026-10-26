@@ -517,6 +517,8 @@ W is per supervisor (ITD-032). The worker's own SIGTERM handler only schedules t
 | `GET` | `/jobs` | `?status=&limit=50&offset=0` | `200 { jobs: Job[] }` | — |
 | `GET` | `/jobs/:id` | — | `200` job + progress + task counts + pool items | `404` |
 | `GET` | `/jobs/:id/tasks` | `?limit=` (default 500, max 5000), `?offset=`, `?kind=`, `?status=` | `200 { total, limit, offset, tasks }` | `404`, `400` |
+| `GET` | `/jobs/:id/task-graph` | — | `200 { tasks, edges }` — per-task inputs/outputs from `items`, parent edges for MERGE | `404` |
+| `GET` | `/jobs/:id/partials/:taskId.csv` | — | `200 text/csv` (partial int64 vector) | `404` |
 | `POST` | `/jobs/:id/cancel` | — | `202` job | `404`, `409` if finished |
 | `DELETE` | `/jobs/:id` | — | `204` (deletes rows and `DATA_DIR/jobs/:id`) | `404`, `409` if active |
 | `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |

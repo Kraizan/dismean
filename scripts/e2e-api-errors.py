@@ -37,6 +37,8 @@ def main() -> int:
     request("POST", "/jobs", {"f": 1, "c": 5}, expect_status=400)
     request("POST", "/jobs", {"f": 10, "c": 1}, expect_status=400)
     request("GET", "/jobs/not-a-uuid", expect_status=404)
+    request("GET", "/jobs/not-a-uuid/task-graph", expect_status=404)
+    request("GET", "/jobs/00000000-0000-4000-8000-000000000000/task-graph", expect_status=404)
     request("POST", "/jobs/not-a-uuid/cancel", expect_status=404)
     request("DELETE", "/jobs/not-a-uuid", expect_status=404)
     request("GET", "/jobs/00000000-0000-4000-8000-000000000000", expect_status=404)

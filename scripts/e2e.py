@@ -98,6 +98,18 @@ def main() -> None:
         print("expected 6 tasks (3 GENERATE + 3 MERGE), got", len(tasks_resp.get("tasks", [])))
         sys.exit(1)
 
+    graph_resp = http("GET", f"/jobs/{job_id}/task-graph")
+    if len(graph_resp.get("tasks", [])) != 6 or len(graph_resp.get("edges", [])) == 0:
+        print("unexpected task-graph", graph_resp)
+        sys.exit(1)
+    non_final = next(
+        t for t in graph_resp["tasks"] if t["kind"] == "MERGE" and not t["is_final"]
+    )
+    partial_csv = http_bytes(f"/jobs/{job_id}/partials/{non_final['id']}.csv").decode().strip()
+    if len(partial_csv.split(",")) != c:
+        print("partial csv mismatch", partial_csv)
+        sys.exit(1)
+
     print("==> e2e passed")
 
 

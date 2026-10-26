@@ -15,6 +15,8 @@ import { streamCsvFile } from "../storage/csv.js";
 import { streamNpyAsCsv, streamNpyFile } from "../storage/npy.js";
 import { deleteJobDir } from "../storage/deleteJobDir.js";
 import { formatJob, formatJobs } from "./jobFormat.js";
+import { fetchTaskGraph } from "./taskGraph.js";
+import { partialPath } from "../paths.js";
 import crypto from "node:crypto";
 
 const uuidParamSchema = z.string().uuid();
@@ -142,6 +144,24 @@ export function jobsRouter(
         return;
       }
       res.json(await formatJob(pool, job));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/jobs/:id/task-graph", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    try {
+      const graph = await fetchTaskGraph(pool, idCheck.data);
+      if (!graph) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      res.json(graph);
     } catch (err) {
       next(err);
     }
@@ -387,6 +407,49 @@ export function jobsRouter(
         `attachment; filename="job-${job.id.slice(0, 8)}-result.npy"`,
       );
       await streamNpyFile(abs, res);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/jobs/:id/partials/:taskId.csv", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    const taskIdCheck = uuidParamSchema.safeParse(req.params.taskId);
+    if (!idCheck.success || !taskIdCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    try {
+      const { rows } = await pool.query<JobRow>(
+        `SELECT * FROM jobs WHERE id = $1`,
+        [idCheck.data],
+      );
+      const job = rows[0];
+      if (!job) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      const { rows: taskRows } = await pool.query<{ id: string }>(
+        `SELECT id FROM tasks WHERE id = $1 AND job_id = $2 AND kind = 'MERGE'`,
+        [taskIdCheck.data, job.id],
+      );
+      if (taskRows.length === 0) {
+        res.status(404).json({ error: "merge task not found" });
+        return;
+      }
+      const npyRel = partialPath(job.id, taskIdCheck.data);
+      const abs = path.join(config.DATA_DIR, npyRel);
+      try {
+        await access(abs);
+      } catch {
+        res.status(404).json({ error: "partial not on disk" });
+        return;
+      }
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="job-${job.id.slice(0, 8)}-partial-${taskIdCheck.data.slice(0, 8)}.csv"`,
+      );
+      await streamNpyAsCsv(abs, res);
     } catch (err) {
       next(err);
     }

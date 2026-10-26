@@ -23,11 +23,11 @@ function parseHeaderDict(headerStr: string): { descr: string; fortran: boolean; 
   return { descr, fortran, shape };
 }
 
-/**
- * Minimal NumPy .npy v1.0 / v2.0 1D uint8 array parser.
- * Avoids writing duplicate CSV files on disk during generation.
- */
-export function parseUint8Npy(buf: Buffer): Uint8Array {
+function readNpyPayload(buf: Buffer): {
+  descr: string;
+  n: number;
+  offset: number;
+} {
   if (
     buf.length < 10 ||
     buf[0] !== 0x93 ||
@@ -50,23 +50,63 @@ export function parseUint8Npy(buf: Buffer): Uint8Array {
   if (offset > buf.length) {
     throw new Error("Truncated .npy header");
   }
-  const headerStr = buf.subarray(10, offset).toString("ascii");
+  const headerStr = buf.subarray(major === 1 ? 10 : 12, offset).toString("ascii");
   const { descr, fortran, shape } = parseHeaderDict(headerStr);
-  if (descr !== "|u1" && descr !== "<u1" && descr !== "uint8") {
-    throw new Error(`Expected uint8 .npy, got descr ${descr}`);
-  }
   if (fortran) {
     throw new Error("Fortran-order .npy not supported");
   }
   if (shape.length !== 1) {
     throw new Error("Only 1-D .npy arrays are supported");
   }
-  const n = shape[0]!;
+  return { descr, n: shape[0]!, offset };
+}
+
+/**
+ * Minimal NumPy .npy v1.0 / v2.0 1D uint8 array parser.
+ * Avoids writing duplicate CSV files on disk during generation.
+ */
+export function parseUint8Npy(buf: Buffer): Uint8Array {
+  const { descr, n, offset } = readNpyPayload(buf);
+  if (descr !== "|u1" && descr !== "<u1" && descr !== "uint8") {
+    throw new Error(`Expected uint8 .npy, got descr ${descr}`);
+  }
   const data = new Uint8Array(buf.buffer, buf.byteOffset + offset, buf.length - offset);
   if (data.length < n) {
     throw new Error("Truncated .npy payload");
   }
   return data.subarray(0, n);
+}
+
+export function parseInt64Npy(buf: Buffer): bigint[] {
+  const { descr, n, offset } = readNpyPayload(buf);
+  if (descr !== "<i8" && descr !== "int64") {
+    throw new Error(`Expected int64 .npy, got descr ${descr}`);
+  }
+  const byteLen = n * 8;
+  if (buf.length - offset < byteLen) {
+    throw new Error("Truncated .npy payload");
+  }
+  const out: bigint[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = buf.readBigInt64LE(offset + i * 8);
+  }
+  return out;
+}
+
+export function parseIntegerNpyAsStrings(buf: Buffer): string[] {
+  const { descr } = readNpyPayload(buf);
+  if (descr === "|u1" || descr === "<u1" || descr === "uint8") {
+    const arr = parseUint8Npy(buf);
+    const out: string[] = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      out[i] = String(arr[i]!);
+    }
+    return out;
+  }
+  if (descr === "<i8" || descr === "int64") {
+    return parseInt64Npy(buf).map((v) => v.toString());
+  }
+  throw new Error(`Unsupported .npy descr ${descr}`);
 }
 
 export async function streamNpyFile(absolutePath: string, res: Response): Promise<void> {
@@ -78,24 +118,21 @@ export async function streamNpyAsCsv(
   res: Response,
 ): Promise<void> {
   const buf = await readFile(absolutePath);
-  const arr = parseUint8Npy(buf);
+  const values = parseIntegerNpyAsStrings(buf);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
 
   const CHUNK = 16_384;
-  for (let i = 0; i < arr.length; i += CHUNK) {
-    const end = Math.min(i + CHUNK, arr.length);
-    const parts: string[] = [];
-    for (let j = i; j < end; j++) {
-      parts.push(String(arr[j]!));
-    }
+  for (let i = 0; i < values.length; i += CHUNK) {
+    const end = Math.min(i + CHUNK, values.length);
+    const parts = values.slice(i, end);
     const prefix = i === 0 ? "" : ",";
-    const suffix = end === arr.length ? "\n" : "";
+    const suffix = end === values.length ? "\n" : "";
     const ok = res.write(prefix + parts.join(",") + suffix);
     if (!ok) {
       await new Promise<void>((resolve) => res.once("drain", resolve));
     }
   }
-  if (arr.length === 0) {
+  if (values.length === 0) {
     res.write("\n");
   }
   res.end();

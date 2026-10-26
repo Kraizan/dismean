@@ -73,7 +73,8 @@ Onboarding index: every tracked source path → what it does → where the desig
 
 | Path | Role | LLD |
 |---|---|---|
-| [api/src/routes/jobs.ts](../api/src/routes/jobs.ts) | Create/list/get/cancel/delete jobs; stream result and inputs | §6, §10 |
+| [api/src/routes/jobs.ts](../api/src/routes/jobs.ts) | Create/list/get/cancel/delete jobs; task-graph; stream result, inputs, partials | §6, §10 |
+| [api/src/routes/taskGraph.ts](../api/src/routes/taskGraph.ts) | Task I/O and lineage edges from `tasks` + `items` | §10 |
 | [api/src/routes/jobFormat.ts](../api/src/routes/jobFormat.ts) | Job DTOs: task counts, pool stats, timings, estimates | §10 |
 | [api/src/routes/fleet.ts](../api/src/routes/fleet.ts) | `GET/PUT /fleet`, prune dead workers, seed default W | §10 |
 | [api/src/routes/cleanup.ts](../api/src/routes/cleanup.ts) | Manual cleanup trigger and storage stats | §12 |
@@ -94,7 +95,7 @@ Onboarding index: every tracked source path → what it does → where the desig
 | Path | Role | LLD |
 |---|---|---|
 | [api/src/storage/csv.ts](../api/src/storage/csv.ts) | Stream CSV for downloads | §10 |
-| [api/src/storage/npy.ts](../api/src/storage/npy.ts) | Stream uint8 `.npy` as CSV for UI | §10 |
+| [api/src/storage/npy.ts](../api/src/storage/npy.ts) | Stream uint8/int64 `.npy` as CSV for UI | §10 |
 | [api/src/storage/deleteJobDir.ts](../api/src/storage/deleteJobDir.ts) | Remove job directory under `DATA_DIR` | §11 |
 
 ### Background cleanup
@@ -121,6 +122,7 @@ Onboarding index: every tracked source path → what it does → where the desig
 | [api/test/paths.test.ts](../api/test/paths.test.ts) | Path layout vs barrier SQL | §11, ITD-028 |
 | [api/test/progress.test.ts](../api/test/progress.test.ts) | Reduction progress formula | §5 |
 | [api/test/npy.test.ts](../api/test/npy.test.ts) | NPY streaming | §10 |
+| [api/test/taskGraph.test.ts](../api/test/taskGraph.test.ts) | Task graph I/O and edges | §10 |
 | [api/test/speed-variance.test.ts](../api/test/speed-variance.test.ts) | Fair-share not starved by one job | §7, ITD-034 |
 | [api/test/dispatcher.integration.test.ts](../api/test/dispatcher.integration.test.ts) | Relay cursor and fair-share SQL (`DISMEAN_INTEGRATION=1`) | §7 |
 | [api/test/scheduler-sql.integration.test.ts](../api/test/scheduler-sql.integration.test.ts) | Pool scheduler invariants in Postgres | §5 |
@@ -160,10 +162,14 @@ Onboarding index: every tracked source path → what it does → where the desig
 
 | Path | Role | LLD |
 |---|---|---|
-| [ui/src/App.tsx](../ui/src/App.tsx) | Ops dashboard: jobs, fleet, events, inspector (ITD-029) | §10, [IPD](decisions/ipd.md) |
+| [ui/src/App.tsx](../ui/src/App.tsx) | Jobs sidebar + task tree inspector | §10, [IPD](decisions/ipd.md) |
+| [ui/src/JobTaskTree.tsx](../ui/src/JobTaskTree.tsx) | DAG layout, toolbar, node detail, file preview/download | §10 |
+| [ui/src/TaskGraphModal.tsx](../ui/src/TaskGraphModal.tsx) | Full-screen modal shell for the task graph | §10, [IPD](decisions/ipd.md) |
+| [ui/src/taskGraph.ts](../ui/src/taskGraph.ts) | Task-graph types and layout helpers | §10 |
 | [ui/src/main.tsx](../ui/src/main.tsx) | React root mount | — |
-| [ui/src/format.ts](../ui/src/format.ts) | Formatting, validation, filters (shared with tests) | — |
+| [ui/src/format.ts](../ui/src/format.ts) | Formatting, job shape validation, estimates | — |
 | [ui/src/format.test.ts](../ui/src/format.test.ts) | UI logic unit tests | [design-doc § tests](design-doc.md) |
+| [ui/src/taskGraph.test.ts](../ui/src/taskGraph.test.ts) | Task level grouping | §10 |
 | [ui/vite.config.ts](../ui/vite.config.ts) | Dev server; proxy `/api` → `:3000` | ITD-029 |
 | [ui/tsconfig.json](../ui/tsconfig.json) | TypeScript config | — |
 | [ui/package.json](../ui/package.json) | Dependencies and `npm test` / `npm run dev` | — |
@@ -220,6 +226,7 @@ Onboarding index: every tracked source path → what it does → where the desig
 | [docs/future-work.md](future-work.md) | Not built yet |
 | [docs/open-questions.md](open-questions.md) | User / verify items |
 | [docs/diagrams/*.md](diagrams/) | Mermaid sequence and state diagrams |
+| [docs/learning/*.md](learning/) | Self-paced curriculum, tutor prompts, drills |
 
 ---
 
