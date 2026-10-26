@@ -6,7 +6,7 @@ Distributed Mean: compute per-index means of many files using a worker fleet. Se
 
 - Docker (Postgres 16 + RabbitMQ 4)
 - Node 22+
-- Python 3.11+ with `uv` or `pip`
+- Python 3.11+ with `pip` (venv)
 
 ## Quick start
 
@@ -16,8 +16,8 @@ docker compose up -d
 
 export DATA_DIR="$(pwd)/data"   # absolute path
 
-# API
-cd api && npm install && npm run dev
+# API (restarts itself if it loses RabbitMQ; see ITD-033)
+(cd api && npm install) && ./scripts/run-api.sh
 
 # Workers (another terminal)
 cd worker && python3 -m venv .venv && source .venv/bin/activate
@@ -31,16 +31,15 @@ cd ui && npm install && npm run dev   # http://localhost:5173 → proxies /api t
 ## Tests
 
 ```bash
-./scripts/verify-all.sh   # docker, unit+integration tests, e2e matrix, cancel, chaos
+./scripts/verify-all.sh   # docker, all tests, e2e, fairness, chaos, broker restart
 RUN_BENCHMARK=1 BENCHMARK_F=20000 ./scripts/verify-all.sh   # optional ITD-027 benchmark
 ```
 
 Or manually:
 
 ```bash
-cd api && npm test
-cd worker && pytest
+(cd api && DISMEAN_INTEGRATION=1 npm test)   # unit + Postgres integration
+(cd worker && .venv/bin/pytest)
+(cd ui && npm test)
 ./scripts/e2e.sh   # requires API + workers running
-DISMEAN_INTEGRATION=1 cd api && npm test   # postgres idempotency test
-BENCHMARK_F=20000 ./scripts/benchmark-job.py   # ITD-027 (API + workers up)
 ```

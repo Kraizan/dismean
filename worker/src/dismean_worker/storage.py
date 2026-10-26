@@ -15,7 +15,7 @@ def atomic_save_npy(path: Path, arr: np.ndarray) -> None:
 
 def atomic_save_csv(path: Path, arr: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = ",".join(f"{float(x):.8f}" for x in arr.tolist())
     tmp = path.with_name(f"{path.name}.tmp-{uuid4().hex}")
-    tmp.write_text(line + "\n", encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        np.savetxt(f, arr.reshape(1, -1), fmt="%.8f", delimiter=",")
     os.replace(tmp, path)

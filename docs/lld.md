@@ -1,6 +1,6 @@
 # Low-level design
 
-**Updated:** 2026-10-25 · [HLD](hld.md) · [Design doc](design-doc.md) · [ITDs](decisions/itd.md)
+**Updated:** 2026-10-26 · [HLD](hld.md) · [Design doc](design-doc.md) · [ITDs](decisions/itd.md)
 
 ## 1. Repository layout
 
@@ -15,7 +15,7 @@ api/
     messages.ts          zod parsers for every message type
     routes/              jobs, cleanup, stats, events, health
     coordinator/         consumer, handlers, scheduler
-    relay/               outbox relay
+    relay/               outbox relay and fair-share dispatcher (ITD-034)
     cleanup/             cleanup sweep
     stats/               heartbeat consumer, worker list, event buffer, snapshot
     storage/             CSV streaming, deletes
@@ -103,7 +103,8 @@ CREATE INDEX items_reserved ON items (reserved_by) WHERE state = 'RESERVED';
 CREATE TABLE fleet (
   id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   desired_workers smallint NOT NULL DEFAULT 4 CHECK (desired_workers BETWEEN 1 AND 32),
-  updated_at      timestamptz NOT NULL DEFAULT now()
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  set_by_api      boolean NOT NULL DEFAULT false   -- false: reset to WORKER_COUNT at each API start (ITD-035)
 );
 ```
 
@@ -118,7 +119,7 @@ All objects are declared in `infra/rabbitmq/definitions.json` and loaded when th
 | Name | Kind | Arguments / bindings |
 |---|---|---|
 | `dm.tasks` | direct exchange | routes key `task` to queue `dm.tasks` |
-| `dm.tasks` | queue | `x-queue-type=quorum`, `x-delivery-limit=3`, `x-dead-letter-exchange=dm.dlx`, `x-consumer-timeout=900000`. Two priority levels are built in (ITD-020) |
+| `dm.tasks` | queue | `x-queue-type=quorum`, `x-delivery-limit=3`, `x-dead-letter-exchange=dm.dlx`, `x-consumer-timeout=900000`. Kept shallow by the dispatcher (about 2 ready tasks per worker, ITD-034) |
 | `dm.dlx` | fanout exchange | goes to `dm.tasks.dead` |
 | `dm.tasks.dead` | queue | quorum, durable |
 | `dm.events` | topic exchange | `task.completed` and `task.failed` go to `dm.coordinator`; `worker.heartbeat` goes to `dm.heartbeats` |
@@ -128,9 +129,9 @@ All objects are declared in `infra/rabbitmq/definitions.json` and loaded when th
 
 **Message properties:**
 - Task and event messages: `content_type=application/json`, `delivery_mode=2` (persistent).
-- Task messages also carry `message_id = "{task_id}:{attempt}"` and **`priority`**: `9` for MERGE (high), `0` for GENERATE (normal).
+- Task messages also carry `message_id = "{task_id}:{attempt}"`. They carry no priority: the dispatcher decides order (ITD-034).
 
-Broker behaviours still to verify, with their fallbacks: [open-questions.md](open-questions.md) V-1 to V-4.
+Broker behaviours checked on the pinned image, with their fallbacks: [open-questions.md](open-questions.md) V-1 to V-5.
 
 ## 4. Message contracts (v1)
 
@@ -235,13 +236,15 @@ GENERATE reports `"output": {"files_written": 5}`. Completions carry no paths: t
 
 A single consumer on `dm.coordinator` and `dm.tasks.dead`, with `prefetch=50`. Messages are **handled one at a time**, and each is acked only after its transaction commits. Events are pushed to the in-memory buffer after commit.
 
-### 5.1 Error handling (ITD-022)
+### 5.1 Error handling (ITD-022, ITD-033)
 
 | Error | Action |
 |---|---|
 | Message fails zod parsing | Log + event `invalid_message`, ack |
-| DB connection or availability error | Roll back. Keep the message **unacked** and retry handling it in-process with backoff (1 s, doubling, max 30 s) until the DB is back. Never nack |
+| DB connection or availability error (including while failing the job) | Roll back. Keep the message **unacked** at the head of the in-process queue and retry it with backoff (1 s, doubling, max 30 s) until the DB is back. Never nack |
 | Any other exception | Roll back. In a new transaction, run `fail_job(job, "internal error: {message}")`. Ack |
+| `fail_job` itself fails for a non-DB reason | Log and `exit(1)`. The message stays unacked and is redelivered after `run-api.sh` restarts the API |
+| AMQP connection or channel closes | Log and `exit(1)`; the restart loop reconnects (ITD-033) |
 
 ### 5.2 Handlers
 
@@ -254,7 +257,7 @@ handle(msg):
     route: task.completed → on_completed | task.failed → on_failed | dead-letter → on_dead
   COMMIT
   ack
-  after commit: push events; signal relay if tasks were created; publish job.stopped if the job was stopped
+  after commit: push events; signal the relay (every applied message frees a worker slot); publish job.stopped if the job was stopped
 
 on_completed(job, msg):
   task := UPDATE tasks SET status='DONE', completed_at=now(), worker_id=msg.worker_id, duration_ms=msg.duration_ms
@@ -364,7 +367,7 @@ SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.f - s)
 FROM j, generate_series(0, j.f - 1, 5) AS s;
 ```
 
-`seed` is a random non-negative 63-bit integer. After commit: signal the relay, and push the event `job_created`.
+`seed` is a random non-negative 48-bit integer (it must stay exact as a JSON number). After commit: signal the relay, and push the event `job_created`.
 
 ### 6.2 Cancel (`POST /jobs/:id/cancel`) and delete (`DELETE /jobs/:id`)
 
@@ -376,24 +379,50 @@ delete: 409 if active; rm -rf DATA_DIR/jobs/{id}; DELETE FROM jobs (cascades) �
 
 `job.stopped` is published by whoever stopped the job (this route, or `fail_job` in the coordinator), right after commit. It's best-effort (ITD-013).
 
-## 7. Outbox relay
+## 7. Outbox relay and fair-share dispatch (ITD-005, ITD-034)
 
 ```text
-every RELAY_INTERVAL_MS, or immediately when the coordinator or routes signal new tasks:
+every RELAY_INTERVAL_MS, or immediately when a route or the coordinator signals (after every applied message):
+  q      := passive declare dm.tasks            -- message_count (ready), consumer_count (live workers)
+  budget := min(RELAY_BATCH, DISPATCH_QUEUE_FACTOR × q.consumer_count − q.message_count)
+  if budget ≤ 0: return                         -- no free slot, or no workers: tasks wait in Postgres
   BEGIN
-    rows := SELECT * FROM tasks WHERE status = 'CREATED'
-            ORDER BY created_at LIMIT RELAY_BATCH FOR UPDATE SKIP LOCKED
-    for MERGE rows: inputs := SELECT id, path, count FROM items WHERE reserved_by = row.id
-                    output_path := paths.partialPath(job, row.id) unless final; result_paths := paths.resultPaths(job) if final
+    ids := round-robin selection (below), at most budget
+    rows := SELECT … FROM tasks WHERE id = ANY(ids) AND status = 'CREATED' FOR UPDATE SKIP LOCKED
+    for MERGE rows (one query for all): inputs := items WHERE reserved_by = ANY(merge ids)
+            output_path := paths.partialPath(job, row.id) unless final; result_paths := paths.resultPaths(job) if final
     for GENERATE rows: output_paths := paths.inputPath(job, i) for i in [file_start, file_start + file_count)
-    publish each TaskMessage to dm.tasks on a confirm channel, priority 9 (MERGE) or 0 (GENERATE)
+    publish each TaskMessage to dm.tasks on a confirm channel (no priority)
     await all confirms                 -- a nack or timeout throws: ROLLBACK, retry next tick
     UPDATE tasks SET status='PUBLISHED', published_at=now()
     WHERE id = ANY(ids) AND status = 'CREATED'
   COMMIT
+  cursor := job of the last published task
 ```
 
-A crash after publishing but before commit republishes the batch (at-least-once). The duplicates are harmless (ITD-009).
+Round-robin selection:
+
+```sql
+WITH cur AS (SELECT created_at, id FROM jobs WHERE id = $cursor_job),
+ranked AS (
+  SELECT t.id, j.id AS job_id, j.created_at AS job_created,
+         row_number() OVER (PARTITION BY t.job_id
+                            ORDER BY (t.kind = 'MERGE') DESC, t.level DESC, t.created_at, t.id) AS rn
+  FROM tasks t JOIN jobs j ON j.id = t.job_id
+  WHERE t.status = 'CREATED' AND j.status IN ('GENERATING', 'REDUCING')
+)
+SELECT r.id FROM ranked r LEFT JOIN cur ON true
+WHERE r.rn <= $budget
+ORDER BY r.rn,                                                    -- round 1 = each job's best task
+         CASE WHEN cur.id IS NULL OR (r.job_created, r.job_id) > (cur.created_at, cur.id)
+              THEN 0 ELSE 1 END,                                  -- start after the job served last
+         r.job_created, r.job_id
+LIMIT $budget;
+```
+
+The cursor's timestamp is read in SQL: a JavaScript `Date` drops Postgres microseconds and would mis-order the rotation.
+
+A crash after publishing but before commit republishes the batch (at-least-once). The duplicates are harmless (ITD-009). Workers' prefetch of 1 plus about two ready tasks per worker means a finished worker never waits for the relay, while per-job ordering stays in SQL.
 
 ## 8. Worker
 
@@ -465,12 +494,16 @@ def atomic_save_npy(path, arr):                   # no fsync (ITD-026)
 ## 9. Supervisor
 
 ```text
-seed target W from WORKER_COUNT; poll GET /fleet every FLEET_POLL_INTERVAL_S (1.5 s)
-scale up: spawn `python -m dismean_worker.worker` for new slots 0..W-1
-scale down: send SIGTERM to slots >= W so they stop consuming, finish in-flight work, and exit 0
-every 0.5 s: reap children; restart any slot < W that exited non-zero (per-slot exponential backoff capped at 30 s)
+start with WORKER_COUNT slots; poll GET /fleet every FLEET_POLL_INTERVAL_S (1.5 s); if the API is down, keep the current count
+scale up: add slots with the lowest free index and spawn `python -m dismean_worker.worker`
+scale down: mark excess slots retiring and SIGTERM them, idle workers first (pid matched against GET /fleet),
+            then slots with no live process, then the newest busy ones; a retiring worker finishes its task and exits 0
+every 0.5 s: reap children; restart any non-retiring slot that exited non-zero
+            (per-slot backoff 1 s doubling to 30 s; reset after 60 s of healthy running)
 SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL the rest; exit
 ```
+
+W is per supervisor (ITD-032). The worker's own SIGTERM handler only schedules the drain on the pika connection (`add_callback_threadsafe`), because a signal can interrupt pika mid-frame.
 
 ## 10. HTTP API
 
@@ -485,10 +518,10 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 | `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |
 | `GET` | `/jobs/:id/result.npy` | — | `200 application/octet-stream` | `404`, `409` |
 | `GET` | `/jobs/:id/inputs/:index.csv` | — | `200 text/csv` (one line) | `404` if not generated |
-| `GET` | `/fleet` | — | `200 { desired_workers, updated_at, workers }` | — |
-| `PUT` | `/fleet` | `{ "desired_workers": 1..32 }` | `200 { desired_workers, updated_at, workers }` | `400` validation |
+| `GET` | `/fleet` | — | `200 { desired_workers, updated_at, source, workers: {counts…, list: [{id, hostname, pid, state}]} }` | — |
+| `PUT` | `/fleet` | `{ "desired_workers": 1..32 }` | `200`, same body; `source` becomes `"api"` | `400` validation |
 | `POST` | `/fleet/prune-dead` | — | `200 { removed }` (clears stale worker entries from memory) | — |
-| `POST` | `/cleanup` | `?force=true` optional | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
+| `POST` | `/cleanup` | `?force=true` ignores the retention window | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
 | `GET` | `/stats` | — | `200` stats snapshot (polled every 1 s by the UI) | — |
 | `GET` | `/events` | `?after_id=&limit=100` | `200 { events: Event[] }` from the in-memory buffer | — |
 | `GET` | `/health` | — | `200 { db: "ok", amqp: "ok" }` | `503` |
@@ -508,7 +541,10 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 ```
 
 - `progress.generation = generated_files / f`.
-- `progress.reduction`: 0 while `GENERATING`; `1 − (live − 1)/(f − 1)` while `REDUCING`, where `live` counts items that are `READY` or `RESERVED`; 1 once `COMPLETED`.
+- `progress.reduction`: 0 while `GENERATING`; `1 − (live − 1)/(f − 1)` while `REDUCING`, where `live` is the number of item **rows** that are `READY` or `RESERVED` (not the sum of their counts, which always equals F); 1 once `COMPLETED`.
+- `pool_items`: per item state, `{ items, files_covered }`.
+- `timings_ms`: wall-clock phases from `created_at`, `generation_completed_at` and `finished_at`; `reduction` only for `COMPLETED` jobs.
+- The list endpoint formats all returned jobs with two grouped queries, not per-job queries.
 - `estimate`: `input_bytes = f·c`; `merge_tasks = ⌈(f−1)/4⌉`; `peak_partial_bytes = (merge_tasks − 1)·8c` (all partials are kept until cleanup); `.npy` headers are ignored.
 
 ### 10.2 Stats snapshot
@@ -516,7 +552,7 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 ```json
 {
   "at": "…",
-  "workers": { "total": 4, "idle": 1, "busy": 3, "stopping": 0, "dead": 0,
+  "workers": { "desired": 4, "total": 4, "idle": 1, "busy": 3, "stopping": 0, "dead": 0,
                "list": [{ "id": "…", "state": "BUSY", "task_id": "…", "job_id": "…", "task_kind": "MERGE",
                           "tasks_done": 118, "last_heartbeat_at": "…" }] },
   "queue": { "tasks_ready": 120, "tasks_unacked": 3, "coordinator_backlog": 0, "tasks_dead": 0 },
@@ -532,7 +568,7 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 |---|---|
 | `workers` | In-memory list (§10.3) |
 | `queue.*` | RabbitMQ management API, `GET /api/queues/%2F/{name}` (`messages_ready`, `messages_unacknowledged`) |
-| `jobs`, `outbox_pending`, `throughput`, `active_jobs` | SQL. `throughput` uses `tasks.completed_at` and `duration_ms` over the last minute |
+| `jobs`, `outbox_pending`, `throughput`, `active_jobs` | SQL. `outbox_pending` counts `CREATED` tasks, which is now the dispatch backlog waiting for queue slots (ITD-034). `throughput` uses `tasks.completed_at` and `duration_ms` over the last minute |
 | `WAITING` / `waiting` | A display-only view of `GENERATING` jobs: no task `DONE` and no busy worker currently on the job. `WAITING` is not a DB status. `jobs.GENERATING` counts only non-waiting jobs |
 
 ### 10.3 In-memory observability (ITD-024)
@@ -543,7 +579,7 @@ SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL
 - **Events:** a ring buffer of `EVENT_BUFFER_SIZE` entries `{id, at, type, job_id?, task_id?, worker_id?, message}`.
   - `id` is a counter that only increases; `GET /events?after_id=` returns newer entries.
   - Every event is also written as one JSON line to stdout.
-- **Event types:** `job_created`, `generation_completed`, `job_completed`, `job_failed`, `job_cancelled`, `job_deleted`, `task_retry`, `task_dead_lettered`, `duplicate_completion`, `stale_failure`, `ignored_inactive_job`, `invalid_message`, `worker_started`, `worker_stopped`, `worker_dead`, `cleanup_ran`.
+- **Event types:** `job_created`, `generation_completed`, `job_completed`, `job_failed`, `job_cancelled`, `job_deleted`, `task_retry`, `task_dead_lettered`, `duplicate_completion`, `stale_failure`, `ignored_inactive_job`, `invalid_message`, `worker_started`, `worker_stopped`, `worker_dead`, `fleet_scaled`, `cleanup_ran`.
   - `worker_started`, `worker_stopped` and `worker_dead` come from changes in the worker list.
 
 ## 11. File layout
@@ -563,15 +599,18 @@ DATA_DIR/
 ## 12. Cleanup sweep
 
 ```text
-every CLEANUP_INTERVAL_MS, and on POST /cleanup:
+every CLEANUP_INTERVAL_MS, and on POST /cleanup (?force=true uses a retention of 0):
   jobs := SELECT id FROM jobs
           WHERE status IN ('COMPLETED','FAILED','CANCELLED')
-            AND finished_at < now() - PARTIAL_RETENTION_MS
+            AND finished_at <= now() - retention
             AND partials_cleaned_at IS NULL
   for each job:
     delete DATA_DIR/jobs/{id}/partials/ and any *.tmp-* files under the job directory
     UPDATE items SET state='DELETED' WHERE job_id = id AND kind = 'PARTIAL'
     UPDATE jobs SET partials_cleaned_at = now() WHERE id = id
+  delete DATA_DIR/jobs/{uuid}/ directories with no jobs row
+    -- a worker finishing a task of a just-deleted job can recreate its directory;
+    -- the row always exists before any task is published, so no live job is affected
   event cleanup_ran { jobs_cleaned, files_deleted, bytes_freed }
 ```
 
@@ -588,7 +627,9 @@ every CLEANUP_INTERVAL_MS, and on POST /cleanup:
 | `DATA_DIR` | *(required, absolute)* | Shared file root |
 | `MAX_ATTEMPTS` | `3` | Clean-failure attempts per task |
 | `RELAY_INTERVAL_MS` | `200` | Outbox poll interval |
-| `RELAY_BATCH` | `500` | Tasks per relay transaction |
+| `RELAY_BATCH` | `500` | Upper bound on tasks per relay transaction |
+| `DISPATCH_QUEUE_FACTOR` | `2` | Ready tasks kept in `dm.tasks` per consuming worker (ITD-034) |
+| `WORKER_COUNT` | `4` | Default W until an operator sets one with `PUT /fleet` (ITD-035) |
 | `CLEANUP_INTERVAL_MS` | `600000` | Cleanup sweep interval |
 | `PARTIAL_RETENTION_MS` | `3600000` | Age after which partials of finished jobs are deleted |
 | `WORKER_STALE_MS` | `10000` | Heartbeat age after which a worker is shown as dead |
@@ -600,8 +641,10 @@ every CLEANUP_INTERVAL_MS, and on POST /cleanup:
 | Env var | Default | Meaning |
 |---|---|---|
 | `AMQP_URL` | `amqp://guest:guest@localhost:5672` | RabbitMQ |
+| `API_URL` | `http://localhost:3000` | Where the supervisor polls `GET /fleet` |
 | `DATA_DIR` | *(required, absolute)* | Shared file root |
-| `WORKER_COUNT` | `4` | W, read by the supervisor at startup |
+| `WORKER_COUNT` | `4` | W the supervisor starts with, before its first `/fleet` poll |
+| `FLEET_POLL_INTERVAL_S` | `1.5` | Supervisor's `/fleet` poll interval |
 | `HEARTBEAT_INTERVAL_S` | `2` | Observability heartbeat interval |
 | `AMQP_HEARTBEAT_S` | `10` | AMQP connection heartbeat |
 | `DRAIN_TIMEOUT_S` | `900` | Supervisor's wait for workers to drain on shutdown |
@@ -613,6 +656,6 @@ every CLEANUP_INTERVAL_MS, and on POST /cleanup:
 | `MAX_FILES_PER_TASK` | `5` | Problem constraint |
 | `GENERATE_BATCH` | `5` | ITD-007 |
 | Value range | `[0, 100]` integers | IPD-003 |
-| Task priority | MERGE `9`, GENERATE `0` | ITD-020 |
+| Dispatch order | Round-robin across jobs; MERGE before GENERATE, deepest first | ITD-034 |
 | `x-delivery-limit` on `dm.tasks` | `3` | ITD-010 |
 | `x-consumer-timeout` on `dm.tasks` | `900000` ms | ITD-008 |

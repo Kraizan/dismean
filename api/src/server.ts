@@ -3,14 +3,20 @@ import { EventEmitter } from "node:events";
 import { loadConfig } from "./config.js";
 import { getPool, closePool } from "./db/pool.js";
 import { runMigrations } from "./db/migrate.js";
-import { connectAmqp, closeAmqp, checkTopology } from "./mq/connection.js";
+import {
+  connectAmqp,
+  closeAmqp,
+  checkTopology,
+  markAmqpClosing,
+  watchChannel,
+} from "./mq/connection.js";
 import { initEventBuffer } from "./events.js";
 import { startHeartbeatConsumer } from "./stats/workers.js";
 import { startCoordinator } from "./coordinator/index.js";
 import { startRelay } from "./relay/index.js";
 import { startCleanupSweep } from "./cleanup/index.js";
 import { jobsRouter } from "./routes/jobs.js";
-import { fleetRouter } from "./routes/fleet.js";
+import { fleetRouter, seedFleetDefault } from "./routes/fleet.js";
 import { cleanupRouter } from "./routes/cleanup.js";
 import { statsRouter } from "./routes/stats.js";
 import { eventsRouter } from "./routes/events.js";
@@ -22,20 +28,16 @@ async function main(): Promise<void> {
 
   const pool = getPool(config);
   await runMigrations(pool);
-  await pool
-    .query(
-      `INSERT INTO fleet (id, desired_workers) VALUES (1, $1) ON CONFLICT (id) DO NOTHING`,
-      [config.WORKER_COUNT],
-    )
-    .catch(() => {});
+  await seedFleetDefault(pool, config.WORKER_COUNT);
 
   const amqpConn = await connectAmqp(config);
   await checkTopology(amqpConn);
 
   const relayEmitter = new EventEmitter();
-  const controlCh = await amqpConn.createChannel();
+  const controlCh = watchChannel(await amqpConn.createChannel(), "control");
 
   const hb = await startHeartbeatConsumer(amqpConn, config);
+  watchChannel(hb.channel, "heartbeats");
   const coordChannels = await startCoordinator(
     amqpConn,
     pool,
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
     controlCh,
     relayEmitter,
   );
+  coordChannels.forEach((ch, i) => watchChannel(ch, `coordinator-${i}`));
 
   const relay = await startRelay(pool, amqpConn, config, relayEmitter);
   const cleanup = startCleanupSweep(pool, config);
@@ -55,7 +58,7 @@ async function main(): Promise<void> {
   app.use(cleanupRouter(pool, config));
   app.use(statsRouter(pool, config));
   app.use(eventsRouter());
-  app.use(healthRouter(pool, amqpConn));
+  app.use(healthRouter(pool));
 
   app.use(
     (
@@ -76,6 +79,7 @@ async function main(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
+    markAmqpClosing();
     server.close();
     relay.stop();
     cleanup.stop();

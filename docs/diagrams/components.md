@@ -9,7 +9,7 @@ flowchart TB
   subgraph API["API process (Node.js / Express / TS)"]
     R[HTTP routes]
     CO[Coordinator<br/>single consumer]
-    RE[Outbox relay]
+    RE[Outbox relay<br/>fair-share dispatcher]
     CL[Cleanup sweep]
     ST[Stats: in-memory worker list<br/>+ last-500 event buffer]
     PA[paths helper]
@@ -22,7 +22,7 @@ flowchart TB
   end
 
   subgraph MQ["RabbitMQ (topology from definitions.json)"]
-    XT{{dm.tasks<br/>direct}} --> QT[[dm.tasks<br/>quorum, 2 priority levels,<br/>delivery-limit 3, consumer-timeout 15m]]
+    XT{{dm.tasks<br/>direct}} --> QT[[dm.tasks<br/>quorum, ~2 ready per worker,<br/>delivery-limit 3, consumer-timeout 15m]]
     QT -. dead-letter .-> XD{{dm.dlx}} --> QD[[dm.tasks.dead]]
     XE{{dm.events<br/>topic}} -->|task.*| QC[[dm.coordinator]]
     XE -->|worker.heartbeat| QH[[dm.heartbeats<br/>TTL 10s]]
@@ -42,8 +42,8 @@ flowchart TB
   UI -->|REST, polls /stats + /events every 1s| R
   R --> J & T
   R --> ST
-  RE -->|SELECT CREATED| T
-  RE -->|publish + confirm<br/>MERGE prio 9, GENERATE prio 0| XT
+  RE -->|round-robin pick of CREATED| T
+  RE -->|publish + confirm into free slots<br/>budget = 2 × consumers − ready| XT
   R -->|job.stopped on cancel| XC
   CO -->|job.stopped on failure| XC
   QC --> CO

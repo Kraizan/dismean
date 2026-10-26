@@ -2,6 +2,7 @@ import type pg from "pg";
 import type { Config } from "../config.js";
 import { getDesiredWorkers } from "../routes/fleet.js";
 import { isJobBusyOnWorkers, buildWorkerStats } from "./workers.js";
+import { reductionProgress } from "./progress.js";
 
 interface QueueStats {
   tasks_ready: number;
@@ -68,17 +69,6 @@ async function fetchQueueStats(config: Config): Promise<QueueStats> {
   return out;
 }
 
-function reductionProgress(
-  status: string,
-  f: number,
-  live: number,
-): number {
-  if (status === "COMPLETED") return 1;
-  if (status === "GENERATING") return 0;
-  if (f <= 1) return 1;
-  return Math.max(0, Math.min(1, 1 - (live - 1) / (f - 1)));
-}
-
 export async function buildStatsSnapshot(
   pool: pg.Pool,
   config: Config,
@@ -120,42 +110,29 @@ export async function buildStatsSnapshot(
     c: number;
     status: string;
     generated_files: number;
+    done_tasks: string;
+    live_items: string;
   }>(
-    `SELECT id, f, c, status::text, generated_files FROM jobs
-     WHERE status IN ('GENERATING', 'REDUCING')
-     ORDER BY created_at DESC`,
+    `SELECT j.id, j.f, j.c, j.status::text, j.generated_files,
+            (SELECT count(*) FROM tasks t WHERE t.job_id = j.id AND t.status = 'DONE')::text AS done_tasks,
+            (SELECT count(*) FROM items i WHERE i.job_id = j.id AND i.state IN ('READY', 'RESERVED'))::text AS live_items
+     FROM jobs j
+     WHERE j.status IN ('GENERATING', 'REDUCING')
+     ORDER BY j.created_at DESC`,
   );
 
   const active_jobs: Array<Record<string, unknown>> = [];
   let waitingCount = 0;
 
   for (const j of genJobs) {
-    const { rows: doneRows } = await pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM tasks
-       WHERE job_id = $1 AND status = 'DONE'`,
-      [j.id],
-    );
-    const doneCount = Number(doneRows[0]?.count ?? 0);
     const busy = isJobBusyOnWorkers(j.id, config);
     const waiting =
-      j.status === "GENERATING" && doneCount === 0 && !busy;
+      j.status === "GENERATING" && Number(j.done_tasks) === 0 && !busy;
     if (waiting) waitingCount += 1;
-
-    let live = j.f;
-    if (j.status === "REDUCING") {
-      const { rows: liveRows } = await pool.query<{ sum: string | null }>(
-        `SELECT sum(count)::text AS sum FROM items
-         WHERE job_id = $1 AND state IN ('READY', 'RESERVED')`,
-        [j.id],
-      );
-      if (liveRows[0]?.sum !== null && liveRows[0]?.sum !== undefined) {
-        live = Number(liveRows[0].sum);
-      }
-    }
 
     const progress = {
       generation: j.generated_files / j.f,
-      reduction: reductionProgress(j.status, j.f, live),
+      reduction: reductionProgress(j.status, j.f, Number(j.live_items)),
     };
 
     active_jobs.push({

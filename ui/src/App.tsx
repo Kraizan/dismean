@@ -1,4 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  eventClass,
+  filterEvents,
+  formatBytes,
+  formatMs,
+  formatTime,
+  formatUptime,
+  isActive,
+  matchesStatus,
+  planEstimate,
+  shortId,
+  shortWorker,
+  validJobShape,
+  type EventCategory,
+  type StatusFilter,
+} from "./format";
 
 const API = "/api";
 
@@ -105,77 +121,6 @@ type TaskDetail = {
   completed_at: string | null;
 };
 
-type StatusFilter =
-  | "ALL"
-  | "WAITING"
-  | "GENERATING"
-  | "REDUCING"
-  | "COMPLETED"
-  | "FAILED"
-  | "CANCELLED";
-
-function formatTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return "—";
-  }
-}
-
-function formatUptime(startedAt?: string): string {
-  if (!startedAt) return "—";
-  const sec = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ${sec % 60}s`;
-  const hr = Math.floor(min / 60);
-  return `${hr}h ${min % 60}m`;
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(2)} MB`;
-  const gb = mb / 1024;
-  return `${gb.toFixed(2)} GB`;
-}
-
-function formatMs(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined) return "—";
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-}
-
-function shortId(id: string): string {
-  return id.slice(0, 8);
-}
-
-function eventClass(type: string): string {
-  if (
-    type.includes("fail") ||
-    type.includes("dead") ||
-    type === "invalid_message"
-  ) {
-    return "event-type-fail";
-  }
-  if (
-    type.includes("completed") ||
-    type === "job_created" ||
-    type === "cleanup_ran" ||
-    type === "fleet_scaled"
-  ) {
-    return "event-type-ok";
-  }
-  return "event-type";
-}
-
 function ProgressBar({ label, value }: { label: string; value: number }) {
   const pct = Math.round(Math.min(1, Math.max(0, value)) * 100);
   return (
@@ -210,7 +155,7 @@ export function App() {
   const [previewLabel, setPreviewLabel] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [eventFilter, setEventFilter] = useState<string>("");
-  const [eventCategory, setEventCategory] = useState<"ALL" | "JOBS" | "WORKERS" | "ERRORS">("ALL");
+  const [eventCategory, setEventCategory] = useState<EventCategory>("ALL");
   const afterIdRef = useRef(0);
   const [f, setF] = useState(12);
   const [c, setC] = useState(5);
@@ -222,22 +167,8 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const liveEstimate = useMemo(() => {
-    const safeF = Math.max(2, Math.min(99_999, Number.isFinite(f) ? Math.floor(f) : 2));
-    const safeC = Math.max(2, Math.min(999_999, Number.isFinite(c) ? Math.floor(c) : 2));
-    const genTasks = Math.ceil(safeF / 5);
-    const mergeTasks = Math.ceil((safeF - 1) / 4);
-    const inputBytes = safeF * safeC;
-    const partialBytes = Math.max(0, mergeTasks - 1) * 8 * safeC;
-    return {
-      genTasks,
-      mergeTasks,
-      totalTasks: genTasks + mergeTasks,
-      inputBytes,
-      partialBytes,
-      totalBytes: inputBytes + partialBytes,
-    };
-  }, [f, c]);
+  const liveEstimate = useMemo(() => planEstimate(f, c), [f, c]);
+  const shapeError = validJobShape(f, c);
 
   const refreshJobs = useCallback(async () => {
     const res = await fetch(`${API}/jobs?limit=50`);
@@ -344,6 +275,10 @@ export function App() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (shapeError) {
+      setError(shapeError);
+      return;
+    }
     await submitJob(f, c);
   }
 
@@ -362,6 +297,7 @@ export function App() {
   async function cancelAllActive() {
     const activeIds = (stats?.active_jobs ?? []).map((j) => j.id);
     if (!activeIds.length) return;
+    if (!window.confirm(`Cancel ${activeIds.length} active job(s)? Running tasks finish but their results are discarded.`)) return;
     setError(null);
     await Promise.all(
       activeIds.map((id) => fetch(`${API}/jobs/${id}/cancel`, { method: "POST" })),
@@ -372,6 +308,7 @@ export function App() {
   }
 
   async function deleteJob(id: string) {
+    if (!window.confirm(`Delete job ${shortId(id)} and all its files?`)) return;
     setError(null);
     const res = await fetch(`${API}/jobs/${id}`, { method: "DELETE" });
     if (!res.ok && res.status !== 204) {
@@ -389,10 +326,9 @@ export function App() {
   }
 
   async function deleteAllFinished() {
-    const finished = recentJobs.filter(
-      (j) => j.status !== "GENERATING" && j.status !== "REDUCING",
-    );
+    const finished = recentJobs.filter((j) => !isActive(j.status));
     if (!finished.length) return;
+    if (!window.confirm(`Delete ${finished.length} finished job(s) and all their files?`)) return;
     setError(null);
     await Promise.all(
       finished.map((j) => fetch(`${API}/jobs/${j.id}`, { method: "DELETE" })),
@@ -412,6 +348,7 @@ export function App() {
   }
 
   async function runCleanup(force: boolean) {
+    if (force && !window.confirm("Delete intermediate partials of every finished job now?")) return;
     setError(null);
     const res = await fetch(`${API}/cleanup${force ? "?force=true" : ""}`, {
       method: "POST",
@@ -501,12 +438,7 @@ export function App() {
         list.push(r);
       }
     }
-    return list.filter((j) => {
-      if (statusFilter === "ALL") return true;
-      if (statusFilter === "WAITING") return Boolean(j.waiting);
-      if (statusFilter === "GENERATING") return j.status === "GENERATING" && !j.waiting;
-      return j.status === statusFilter;
-    });
+    return list.filter((j) => matchesStatus(j, statusFilter));
   }, [recentJobs, stats?.active_jobs, statusFilter]);
 
   const filteredTasks = useMemo(() => {
@@ -514,39 +446,13 @@ export function App() {
     return jobTasks.filter((t) => t.kind === taskFilter);
   }, [jobTasks, taskFilter]);
 
-  const filteredEvents = useMemo(() => {
-    const q = eventFilter.trim().toLowerCase();
-    const base = [...events].reverse();
-    return base.filter((ev) => {
-      if (eventCategory === "JOBS" && !ev.type.startsWith("job_") && ev.type !== "generation_completed") {
-        return false;
-      }
-      if (eventCategory === "WORKERS" && !ev.type.startsWith("worker_") && ev.type !== "fleet_scaled") {
-        return false;
-      }
-      if (
-        eventCategory === "ERRORS" &&
-        !ev.type.includes("fail") &&
-        !ev.type.includes("dead") &&
-        ev.type !== "task_retry" &&
-        ev.type !== "invalid_message"
-      ) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        ev.type.toLowerCase().includes(q) ||
-        (ev.job_id && ev.job_id.toLowerCase().includes(q)) ||
-        (ev.worker_id && ev.worker_id.toLowerCase().includes(q)) ||
-        (ev.message && ev.message.toLowerCase().includes(q))
-      );
-    });
-  }, [events, eventFilter, eventCategory]);
+  const filteredEvents = useMemo(
+    () => filterEvents(events, eventCategory, eventFilter),
+    [events, eventFilter, eventCategory],
+  );
 
   const hasActiveJobs = (stats?.active_jobs.length ?? 0) > 0;
-  const hasFinishedJobs = recentJobs.some(
-    (j) => j.status !== "GENERATING" && j.status !== "REDUCING",
-  );
+  const hasFinishedJobs = recentJobs.some((j) => !isActive(j.status));
 
   return (
     <div className="app">
@@ -640,9 +546,9 @@ export function App() {
           <div className="kpi-sub">tasks/s (1m window)</div>
         </div>
         <div className="kpi">
-          <div className="kpi-label">Outbox</div>
+          <div className="kpi-label">Dispatch backlog</div>
           <div className="kpi-value">{stats?.outbox_pending ?? "—"}</div>
-          <div className="kpi-sub">pending publish</div>
+          <div className="kpi-sub">tasks waiting in DB (fair-share)</div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Coordinator</div>
@@ -724,7 +630,12 @@ export function App() {
             />
           </div>
           <div className="actions">
-            <button type="submit" className="primary" disabled={submitting || !connected}>
+            <button
+              type="submit"
+              className="primary"
+              disabled={submitting || !connected || shapeError !== null}
+              title={shapeError ?? undefined}
+            >
               {submitting ? "Submitting…" : "Run job"}
             </button>
             <button
@@ -746,6 +657,7 @@ export function App() {
               Force cleanup partials
             </button>
           </div>
+          {shapeError && <div className="field-error">{shapeError}</div>}
           <div className="estimate-pill">
             <span>
               Plan: <strong>{liveEstimate.genTasks}</strong> GENERATE +{" "}
@@ -890,7 +802,7 @@ export function App() {
                     {stats.workers.list.map((w) => (
                       <tr key={w.id}>
                         <td className="mono" title={w.id}>
-                          {w.id.replace(/\.local-/, "-")}
+                          {shortWorker(w.id)}
                         </td>
                         <td className="mono">{w.pid ?? "—"}</td>
                         <td>
@@ -1242,9 +1154,7 @@ export function App() {
                             </span>
                           </td>
                           <td className="mono">
-                            {t.worker_id
-                              ? t.worker_id.replace(/\.local-/, "-")
-                              : "—"}
+                            {t.worker_id ? shortWorker(t.worker_id) : "—"}
                           </td>
                           <td className="mono">{formatMs(t.duration_ms)}</td>
                         </tr>
@@ -1305,7 +1215,7 @@ export function App() {
                       {ev.worker_id && (
                         <span className="mono">
                           {" "}
-                          · {ev.worker_id.replace(/\.local-/, "-")}
+                          · {shortWorker(ev.worker_id)}
                         </span>
                       )}
                       {ev.message && (

@@ -74,9 +74,9 @@ Entry template:
 8. **Exact arithmetic:** `uint8` inputs, `int64` sums, one float division at the end (ITD-011).
 9. **Heartbeats are display-only.** Worker state and events live in API memory (ITD-008, ITD-024).
 10. **Only `api/src/paths.ts` builds file paths.** Workers use the paths in their message; the coordinator ignores paths from workers (ITD-028).
-11. **Priority:** MERGE 9, GENERATE 0 (ITD-020).
+11. **Fair-share dispatch:** the relay fills only free queue slots, round-robin across active jobs, deepest MERGE first within a job. Messages carry no priority (ITD-034).
 12. **Topology lives only in `definitions.json`.** Code only checks that it exists (ITD-023).
-13. **No job hangs.** A coordinator error either waits out a DB outage or fails the job (ITD-022).
+13. **No job hangs.** A coordinator error either waits out a DB outage, fails the job, or exits the API so the restart loop redelivers the message (ITD-022, ITD-033).
 
 ## Conventions
 
@@ -94,13 +94,14 @@ Entry template:
 docker compose up -d
 export DATA_DIR="$(pwd)/data"   # absolute path required
 
-cd api && npm install && npm run dev
+cd api && npm install && cd .. && ./scripts/run-api.sh   # restart loop (ITD-033); `npm run dev` hot-reloads but never restarts
 cd worker && python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 python -m dismean_worker.supervisor
 
-cd api && npm test
+cd api && DISMEAN_INTEGRATION=1 npm test   # unit + Postgres integration
 cd worker && pytest
-./scripts/verify-all.sh   # full local check (docker, tests, e2e)
+cd ui && npm test
+./scripts/verify-all.sh   # full local check: docker, all tests, e2e, fairness, chaos, broker restart
 ./scripts/e2e.sh          # API + workers already running
 ```
 

@@ -15,6 +15,7 @@ const configSchema = z.object({
   MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
   RELAY_INTERVAL_MS: z.coerce.number().int().positive().default(200),
   RELAY_BATCH: z.coerce.number().int().positive().default(500),
+  DISPATCH_QUEUE_FACTOR: z.coerce.number().int().positive().default(2),
   CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(600_000),
   PARTIAL_RETENTION_MS: z.coerce.number().int().positive().default(3_600_000),
   WORKER_COUNT: z.coerce.number().int().min(1).max(32).default(4),

@@ -2,17 +2,11 @@
 
 Designed but not built. Each entry says when to build it and how.
 
-## 1. Fair-share dispatcher
-**When:** small jobs waiting behind a big job's generation hurts the user experience (IPD-014).
-- Tasks wait in Postgres. A dispatcher publishes only while `messages_ready < 2 × live workers`.
-- It picks round-robin across jobs; within a job, deepest merge first, then MERGE before GENERATE (`SELECT DISTINCT ON (job_id) … ORDER BY job_id, level DESC, created_at`, with a rotating cursor).
-- **Gains:** real fairness, about W live partials per job, a near-empty queue.
-- **Costs:** one loop and one tick of latency.
+## 1. Fair-share dispatcher (Built — ITD-034, IPD-016)
+- Built into the outbox relay (`api/src/relay/index.ts`). Possible next steps: weight rounds by C, and replace the window query with a per-job lateral `LIMIT` if the ITD-027 benchmark shows it is slow.
 
-## 2. Per-level priority
-**When:** live partials matter (disk). Two levels are already built (ITD-020).
-- A classic queue with `x-max-priority=10` and priority = `min(level, 9)` runs deeper merges first.
-- **Costs:** loses the quorum delivery limit and dead-lettering. The dispatcher (§1) is probably the better route.
+## 2. Per-level priority (Obsolete)
+- The dispatcher already runs deeper merges first within a job, without broker priorities.
 
 ## 3. Coordinator scale-out
 **When:** the benchmark (ITD-027) shows workers waiting on the coordinator, or the single point of failure matters. Options, cheapest first:

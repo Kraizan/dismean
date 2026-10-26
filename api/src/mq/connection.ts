@@ -31,16 +31,42 @@ const HEARTBEATS_QUEUE_ARGS = {
 };
 
 let connection: ChannelModel | null = null;
+let closing = false;
+
+function exitOnBrokerLoss(what: string, err?: unknown): void {
+  if (closing) return;
+  // Same rule as workers (ITD-021): no in-process reconnect; the restart loop brings the API back (ITD-033).
+  console.error(`amqp ${what}; exiting so the restart loop reconnects`, err ?? "");
+  process.exit(1);
+}
+
+export function amqpConnected(): boolean {
+  return connection !== null && !closing;
+}
 
 export async function connectAmqp(config: Config): Promise<ChannelModel> {
   if (connection) return connection;
-  connection = await amqp.connect(config.AMQP_URL);
-  return connection;
+  const conn = await amqp.connect(config.AMQP_URL);
+  conn.on("error", (err) => exitOnBrokerLoss("connection error", err));
+  conn.on("close", () => exitOnBrokerLoss("connection closed"));
+  connection = conn;
+  return conn;
+}
+
+export function watchChannel(ch: Channel, name: string): Channel {
+  ch.on("error", (err) => exitOnBrokerLoss(`channel ${name} error`, err));
+  ch.on("close", () => exitOnBrokerLoss(`channel ${name} closed`));
+  return ch;
+}
+
+export function markAmqpClosing(): void {
+  closing = true;
 }
 
 export async function closeAmqp(): Promise<void> {
+  closing = true;
   if (connection) {
-    await connection.close();
+    await connection.close().catch(() => {});
     connection = null;
   }
 }
@@ -76,11 +102,8 @@ export async function createConfirmChannel(
   conn: ChannelModel,
 ): Promise<ConfirmChannel> {
   const ch = await conn.createConfirmChannel();
+  watchChannel(ch, "relay");
   return ch;
-}
-
-export function taskPriority(kind: "GENERATE" | "MERGE"): number {
-  return kind === "MERGE" ? 9 : 0;
 }
 
 export async function publishTask(
@@ -100,7 +123,6 @@ export async function publishTaskBatch(
       contentType: "application/json",
       deliveryMode: 2,
       messageId: `${message.task_id}:${message.attempt}`,
-      priority: taskPriority(message.kind),
     });
     if (!ok) {
       await new Promise<void>((resolve) => ch.once("drain", resolve));

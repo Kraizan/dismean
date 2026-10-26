@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Any
 
 from . import config
 
@@ -21,85 +22,121 @@ class Slot:
     process: subprocess.Popen[bytes] | None = None
     backoff_s: float = 1.0
     next_spawn_at: float = 0.0
-    draining: bool = False
+    spawned_at: float = 0.0
+    retiring: bool = False
 
 
-def _poll_desired_workers(api_url: str) -> int | None:
+HEALTHY_RUN_S = 60.0
+
+
+def _fetch_fleet(api_url: str) -> dict[str, Any] | None:
     try:
         with urllib.request.urlopen(f"{api_url}/fleet", timeout=2.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        val = data.get("desired_workers")
-        if isinstance(val, int) and not isinstance(val, bool) and 1 <= val <= 32:
-            return val
     except Exception:
         return None
+    val = data.get("desired_workers")
+    if isinstance(val, int) and not isinstance(val, bool) and 1 <= val <= 32:
+        return data
     return None
+
+
+def _idle_pids(fleet: dict[str, Any]) -> set[int]:
+    workers = fleet.get("workers") or {}
+    return {
+        w["pid"]
+        for w in workers.get("list") or []
+        if isinstance(w, dict) and w.get("state") == "IDLE" and isinstance(w.get("pid"), int)
+    }
 
 
 @dataclass
 class Supervisor:
-    worker_count: int
-    slots: dict[int, Slot] = field(default_factory=dict)
+    """Keeps `target` non-retiring workers alive. W is per supervisor (ITD-032)."""
+
+    target: int
+    slots: list[Slot] = field(default_factory=list)
     shutting_down: bool = False
     last_fleet_poll: float = 0.0
 
-    def __post_init__(self) -> None:
-        self.slots = {i: Slot(index=i) for i in range(self.worker_count)}
+    def _active(self) -> list[Slot]:
+        return [s for s in self.slots if not s.retiring]
+
+    def _free_index(self) -> int:
+        used = {s.index for s in self.slots}
+        i = 0
+        while i in used:
+            i += 1
+        return i
 
     def _spawn(self, slot: Slot) -> None:
         env = os.environ.copy()
         env["WORKER_INDEX"] = str(slot.index)
-        slot.draining = False
-        slot.process = subprocess.Popen(
-            [sys.executable, "-m", "dismean_worker.worker"],
-            env=env,
-        )
+        slot.process = subprocess.Popen([sys.executable, "-m", "dismean_worker.worker"], env=env)
+        slot.spawned_at = time.monotonic()
         LOG.info("spawned worker index %s pid %s", slot.index, slot.process.pid)
 
-    def _reconcile_target(self) -> None:
+    def _retire(self, slot: Slot) -> None:
+        slot.retiring = True
+        proc = slot.process
+        if proc is not None and proc.poll() is None:
+            LOG.info("draining worker index %s pid %s", slot.index, proc.pid)
+            proc.send_signal(signal.SIGTERM)
+
+    def reconcile(self, desired: int, idle_pids: set[int]) -> None:
+        self.target = desired
+        active = self._active()
+        while len(active) < desired:
+            slot = Slot(index=self._free_index())
+            self.slots.append(slot)
+            active.append(slot)
+        excess = len(active) - desired
+        if excess <= 0:
+            return
+        # Idle workers first, then slots with no live process, then the newest busy ones.
+        def drain_rank(s: Slot) -> tuple[int, int]:
+            pid = s.process.pid if s.process else None
+            if pid is not None and pid in idle_pids:
+                return (0, -s.index)
+            if s.process is None or s.process.poll() is not None:
+                return (1, -s.index)
+            return (2, -s.index)
+
+        for slot in sorted(active, key=drain_rank)[:excess]:
+            self._retire(slot)
+
+    def _poll_fleet(self) -> None:
         now = time.monotonic()
         if now - self.last_fleet_poll < config.FLEET_POLL_INTERVAL_S:
             return
         self.last_fleet_poll = now
-        desired = _poll_desired_workers(config.API_URL)
-        if desired is None or desired == self.worker_count:
+        fleet = _fetch_fleet(config.API_URL)
+        if fleet is None:
             return
-        LOG.info("reconciling worker_count %s -> %s", self.worker_count, desired)
-        self.worker_count = desired
-
-        for idx in range(desired):
-            slot = self.slots.get(idx)
-            if slot is None:
-                self.slots[idx] = Slot(index=idx)
-
-        for idx, slot in list(self.slots.items()):
-            if idx >= desired:
-                proc = slot.process
-                if proc is None:
-                    del self.slots[idx]
-                elif not slot.draining and proc.poll() is None:
-                    slot.draining = True
-                    LOG.info("draining worker index %s pid %s", slot.index, proc.pid)
-                    proc.send_signal(signal.SIGTERM)
+        desired = fleet["desired_workers"]
+        if desired != len(self._active()):
+            LOG.info("reconciling workers %s -> %s", len(self._active()), desired)
+            self.reconcile(desired, _idle_pids(fleet))
 
     def _reap(self) -> None:
         now = time.monotonic()
-        for idx, slot in list(self.slots.items()):
+        for slot in list(self.slots):
             proc = slot.process
             if proc is None:
-                if idx >= self.worker_count:
-                    del self.slots[idx]
+                if slot.retiring:
+                    self.slots.remove(slot)
                 continue
             code = proc.poll()
             if code is None:
                 continue
             LOG.warning("worker index %s exited with code %s", slot.index, code)
             slot.process = None
-            slot.draining = False
-            if self.shutting_down or idx >= self.worker_count:
-                if idx >= self.worker_count:
-                    del self.slots[idx]
+            if slot.retiring or self.shutting_down:
+                if slot in self.slots and slot.retiring:
+                    self.slots.remove(slot)
                 continue
+            if now - slot.spawned_at >= HEALTHY_RUN_S:
+                slot.backoff_s = 1.0
             if code != 0:
                 slot.next_spawn_at = now + slot.backoff_s
                 slot.backoff_s = min(slot.backoff_s * 2, 30.0)
@@ -109,19 +146,13 @@ class Supervisor:
 
     def _ensure_running(self) -> None:
         now = time.monotonic()
-        for idx, slot in list(self.slots.items()):
-            if idx >= self.worker_count:
-                continue
-            if (
-                slot.process is None
-                and not self.shutting_down
-                and now >= slot.next_spawn_at
-            ):
+        for slot in self._active():
+            if slot.process is None and not self.shutting_down and now >= slot.next_spawn_at:
                 self._spawn(slot)
 
     def _forward_sigterm(self) -> None:
         self.shutting_down = True
-        for slot in self.slots.values():
+        for slot in self.slots:
             proc = slot.process
             if proc is not None and proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
@@ -129,11 +160,10 @@ class Supervisor:
     def _wait_drain(self) -> None:
         deadline = time.monotonic() + config.DRAIN_TIMEOUT_S
         while time.monotonic() < deadline:
-            alive = [s.process for s in self.slots.values() if s.process and s.process.poll() is None]
-            if not alive:
+            if not any(s.process and s.process.poll() is None for s in self.slots):
                 return
             time.sleep(0.5)
-        for slot in self.slots.values():
+        for slot in self.slots:
             proc = slot.process
             if proc is not None and proc.poll() is None:
                 LOG.error("killing worker index %s after drain timeout", slot.index)
@@ -146,10 +176,10 @@ class Supervisor:
         signal.signal(signal.SIGTERM, _on_signal)
         signal.signal(signal.SIGINT, _on_signal)
 
-        self._reconcile_target()
-        self._ensure_running()
+        self.reconcile(self.target, set())
+        self._poll_fleet()
         while not self.shutting_down:
-            self._reconcile_target()
+            self._poll_fleet()
             self._reap()
             self._ensure_running()
             time.sleep(0.5)
@@ -158,11 +188,8 @@ class Supervisor:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    Supervisor(worker_count=config.WORKER_COUNT).run()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    Supervisor(target=config.WORKER_COUNT).run()
 
 
 if __name__ == "__main__":

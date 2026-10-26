@@ -1,6 +1,6 @@
 # High-level design
 
-**Updated:** 2026-10-25 · [Design doc](design-doc.md) · [LLD](lld.md) · [Full component diagram](diagrams/components.md)
+**Updated:** 2026-10-26 · [Design doc](design-doc.md) · [LLD](lld.md) · [Full component diagram](diagrams/components.md)
 
 ## 1. Overview
 
@@ -8,10 +8,10 @@
 flowchart LR
   User((User / UI)) -->|REST; polls /stats, /events| API
   subgraph API["API (Node / Express / TS)"]
-    HTTP[Routes] --- COORD[Coordinator] --- RELAY[Outbox relay] --- CLEAN[Cleanup] --- STATS[Stats, in memory]
+    HTTP[Routes] --- COORD[Coordinator] --- RELAY[Relay / fair-share dispatcher] --- CLEAN[Cleanup] --- STATS[Stats, in memory]
   end
   API <-->|SQL| PG[(Postgres)]
-  RELAY -->|tasks, priority 9 or 0| MQ{{RabbitMQ}}
+  RELAY -->|tasks into free slots, round-robin per job| MQ{{RabbitMQ}}
   MQ -->|task results, dead letters| COORD
   MQ -->|heartbeats| STATS
   subgraph Fleet["Workers (Python)"]
@@ -29,12 +29,12 @@ flowchart LR
 |---|---|---|
 | **Routes** | Create jobs (job + GENERATE tasks in one statement); list, get, cancel and delete jobs; downloads; `/fleet`, `/cleanup`, `/stats`, `/events` | Publish tasks directly |
 | **Coordinator** | Single consumer of `dm.coordinator` and `dm.tasks.dead`. In one transaction per message: count generated files, run the barrier, schedule the pool, detect the final merge, retry or fail tasks | Ack before commit; trust paths from workers |
-| **Outbox relay** | Publish `CREATED` tasks with confirms and priority, then mark them `PUBLISHED` | — |
+| **Outbox relay / dispatcher** | Fill free queue slots (about 2 per worker) with `CREATED` tasks, round-robin across jobs and deepest merge first; publish with confirms, then mark them `PUBLISHED` (ITD-034) | Flood the queue; reorder tasks inside the broker |
 | **Cleanup** | Every 10 min and on demand: delete partials of finished jobs past the retention window | Touch active jobs |
 | **Stats** | In-memory worker list (from heartbeats) and last-500 event buffer, plus SQL counts and RabbitMQ management stats | — |
 | **`paths`** | Builds every file path | — |
 | **Postgres** | `jobs`, `tasks` (also the outbox), `items` (the pool), `fleet` (desired W) | Be reached by workers |
-| **RabbitMQ** | Delivery, two-level priority, redelivery, consumer timeout, delivery limit and dead-lettering, control broadcast. Topology from `definitions.json` | — |
+| **RabbitMQ** | Delivery, redelivery, consumer timeout, delivery limit and dead-lettering, control broadcast. Topology from `definitions.json` | — |
 | **Worker** | One task at a time: GENERATE or MERGE, atomic writes, publish the result, ack, heartbeat, skip stopped jobs, exit on broker error | Touch Postgres; exceed 5 files; build paths |
 | **Supervisor** | Reconcile worker processes to `GET /fleet` target `W` (fallback `WORKER_COUNT`), restart crashed ones, drain on scale-down or SIGTERM | — |
 | **UI** | Submit and manage jobs; dashboard polling every 1 s | — |
@@ -45,7 +45,7 @@ flowchart LR
 
 | Exchange | Queue(s) | Producer | Consumer |
 |---|---|---|---|
-| `dm.tasks` (direct) | `dm.tasks`: quorum, 2 priority levels, delivery limit 3, dead-letters to `dm.dlx`, consumer timeout 15 min | Relay | Workers |
+| `dm.tasks` (direct) | `dm.tasks`: quorum, kept shallow by the dispatcher, delivery limit 3, dead-letters to `dm.dlx`, consumer timeout 15 min | Relay | Workers |
 | `dm.dlx` (fanout) | `dm.tasks.dead` | RabbitMQ | Coordinator |
 | `dm.events` (topic) | `dm.coordinator` (`task.*`), `dm.heartbeats` (`worker.heartbeat`, TTL 10 s) | Workers | Coordinator, Stats |
 | `dm.control` (fanout) | One exclusive queue per worker | Routes, Coordinator | Workers |
@@ -53,7 +53,7 @@ flowchart LR
 ## 4. Flow
 
 1. **Submit:** `POST /jobs` creates the job (`GENERATING`) and ⌈F/5⌉ GENERATE tasks, then returns `201` with the job and a size estimate.
-2. **Publish:** the relay publishes the tasks and marks them `PUBLISHED`.
+2. **Dispatch:** the relay publishes tasks only into free queue slots, one per active job per round, and marks them `PUBLISHED`. The rest wait as `CREATED` in Postgres (ITD-034).
 3. **Generate:** workers write seeded `.npy` files, publish `task.completed`, then ack.
 4. **Barrier:** the completion that makes `generated_files = F` seeds the pool and creates the leaf merges, in one transaction.
 5. **Reduce:** each merge completion adds a partial to the pool; the scheduler merges any 5, or the last 2–4 once nothing else is open.
@@ -78,8 +78,8 @@ State machines: [job-state-machine.md](diagrams/job-state-machine.md). Sequence:
 | Process | Run with | Port |
 |---|---|---|
 | Postgres 16, RabbitMQ 4 + management | `docker compose up` (loads `definitions.json`) | 5432; 5672, 15672 |
-| API | `npm run dev` in `api/` | 3000 |
-| Supervisor + W workers | `uv run python -m dismean_worker.supervisor` in `worker/` | — |
+| API | `scripts/run-api.sh` (restart loop; the API exits on broker loss, ITD-033) | 3000 |
+| Supervisor + W workers | `.venv/bin/python -m dismean_worker.supervisor` in `worker/` (W from `GET /fleet`) | — |
 | UI | `npm run dev` in `ui/` (proxies `/api` to 3000) | 5173 |
 
 The API and workers must use the same absolute `DATA_DIR`.
@@ -92,7 +92,8 @@ The API and workers must use the same absolute `DATA_DIR`.
 | Postgres / RabbitMQ in Docker | Managed Postgres; Amazon MQ or CloudAMQP with 3-node quorum queues |
 | `DATA_DIR` | S3 or GCS; lifecycle rules replace cleanup (future-work §7) |
 | Supervisor | Kubernetes Deployment or ECS Service, one worker per container. Its memory limit makes the 5-file rule real |
-| `WORKER_COUNT` | `replicas` / `desiredCount`, or KEDA scaling on queue depth; an API-set W becomes min/max bounds (future-work §4) |
+| `GET/PUT /fleet` + supervisor | `replicas` / `desiredCount` set by the API, or KEDA scaling on the dispatch backlog with the API-set W as min/max bounds |
+| `scripts/run-api.sh` | The orchestrator's restart policy |
 | SIGTERM drain | Same, within the grace period. Unacked work is redelivered, so spot instances are safe |
 | In-memory stats | Redis or Prometheus + Grafana, so any replica can answer |
 | UI dev server | Static build on a CDN |
@@ -103,8 +104,8 @@ The API and workers must use the same absolute `DATA_DIR`.
 |---|---|---|
 | Coordinator, one transaction per completion (about 200–1,000/s locally) | Very short tasks (small C) | Benchmark first (ITD-027), then batch, then shard |
 | Disk: F·C of inputs + (M−1)·8C of partials per job | Large jobs, kept until cleanup | Retention window; object storage |
-| Queue depth: up to ⌈F/5⌉ per job | Never a problem for RabbitMQ | Dispatcher (future-work §1) |
-| No strict fairness | A small job behind a big job's generation | Dispatcher |
+| Dispatch query: one window over all `CREATED` tasks per relay tick | Many very large jobs at once (about 20k rows per F = 100k job) | Measure with ITD-027; then rank per job with a lateral `LIMIT` |
+| Round-robin is per job, not per task cost | A job with huge C gets the same number of slots as one with tiny C | Weight rounds by C if it matters |
 
 ## 9. Security
 

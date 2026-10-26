@@ -62,7 +62,6 @@ async function processMessage(
 
   const jobId = parsed.body.job_id;
   const client = await pool.connect();
-  let released = false;
 
   try {
     await client.query("BEGIN");
@@ -74,6 +73,7 @@ async function processMessage(
     if (!job || (job.status !== "GENERATING" && job.status !== "REDUCING")) {
       await client.query("COMMIT");
       ch.ack(msg);
+      relayEmitter.emit(RELAY_SIGNAL);
       pushEvent({
         type: "ignored_inactive_job",
         job_id: jobId,
@@ -93,9 +93,8 @@ async function processMessage(
     ch.ack(msg);
 
     flushEvents(handlerResult.events);
-    if (handlerResult.relaySignal) {
-      relayEmitter.emit(RELAY_SIGNAL);
-    }
+    // Every applied result frees a worker slot, so the dispatcher may top up the queue.
+    relayEmitter.emit(RELAY_SIGNAL);
     if (handlerResult.jobStopped && handlerResult.jobId && handlerResult.stopStatus) {
       try {
         await publishJobStopped(controlCh, {
@@ -110,29 +109,8 @@ async function processMessage(
     }
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
-    if (isDbAvailabilityError(err)) {
-      client.release();
-      released = true;
-      let backoff = 1000;
-      for (;;) {
-        await sleep(backoff);
-        try {
-          await processMessage(
-            pool,
-            config,
-            controlCh,
-            relayEmitter,
-            msg,
-            fromDead,
-            ch,
-          );
-          return;
-        } catch (retryErr) {
-          if (!isDbAvailabilityError(retryErr)) throw retryErr;
-          backoff = Math.min(backoff * 2, 30_000);
-        }
-      }
-    }
+    // DB outage: leave the message unacked; drainQueue retries it with backoff.
+    if (isDbAvailabilityError(err)) throw err;
 
     try {
       await client.query("BEGIN");
@@ -170,7 +148,7 @@ async function processMessage(
       throw inner;
     }
   } finally {
-    if (!released) client.release();
+    client.release();
   }
 }
 
@@ -189,19 +167,36 @@ async function drainQueue(
 ): Promise<void> {
   if (processing) return;
   processing = true;
-  while (pending.length > 0) {
-    const next = pending.shift()!;
-    await processMessage(
-      pool,
-      config,
-      controlCh,
-      relayEmitter,
-      next.msg,
-      next.fromDead,
-      next.ch,
-    );
+  let backoff = 1000;
+  try {
+    while (pending.length > 0) {
+      const next = pending[0]!;
+      try {
+        await processMessage(
+          pool,
+          config,
+          controlCh,
+          relayEmitter,
+          next.msg,
+          next.fromDead,
+          next.ch,
+        );
+        pending.shift();
+        backoff = 1000;
+      } catch (err) {
+        if (isDbAvailabilityError(err)) {
+          await sleep(backoff);
+          backoff = Math.min(backoff * 2, 30_000);
+          continue;
+        }
+        // The message stays unacked and is redelivered after the restart (ITD-033).
+        console.error("coordinator: unrecoverable error, exiting", err);
+        process.exit(1);
+      }
+    }
+  } finally {
+    processing = false;
   }
-  processing = false;
 }
 
 function enqueue(

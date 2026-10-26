@@ -36,53 +36,37 @@ def get_queue(name: str) -> dict:
         return json.loads(resp.read().decode())
 
 
-def verify_quorum_priority() -> list[str]:
-    """V-1: Verify high-priority (9) messages preempt normal (0) on a RabbitMQ 4 quorum queue."""
+def verify_dispatch_signals() -> list[str]:
+    """V-5: a passive declare on a quorum queue reports ready messages and live consumers (ITD-034)."""
     errors: list[str] = []
     conn = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
     try:
         ch = conn.channel()
-        q = "dm.verify.v1.priority"
-        try:
-            ch.queue_delete(queue=q)
-        except Exception:
-            ch = conn.channel()
-        ch.queue_declare(queue=q, durable=True, arguments={"x-queue-type": "quorum"})
-        for i in range(6):
-            ch.basic_publish(
-                "",
-                q,
-                f"L{i}".encode(),
-                pika.BasicProperties(priority=0, delivery_mode=2),
-            )
-        for i in range(6):
-            ch.basic_publish(
-                "",
-                q,
-                f"H{i}".encode(),
-                pika.BasicProperties(priority=9, delivery_mode=2),
-            )
-        ch.basic_qos(prefetch_count=1)
-        out: list[str] = []
-        for method, _props, body in ch.consume(q, inactivity_timeout=2.0):
-            if method is None:
-                break
-            out.append(body.decode())
-            ch.basic_ack(method.delivery_tag)
-            if len(out) == 12:
-                break
-        ch.cancel()
+        # The relay waits for confirms before its next depth check; unconfirmed publishes may not be counted yet.
+        ch.confirm_delivery()
+        q = "dm.verify.v5.dispatch"
         ch.queue_delete(queue=q)
+        ch.queue_declare(queue=q, durable=True, arguments={"x-queue-type": "quorum"})
+        for i in range(3):
+            ch.basic_publish("", q, f"m{i}".encode(), pika.BasicProperties(delivery_mode=2))
+        ready = ch.queue_declare(queue=q, passive=True).method.message_count
+        if ready != 3:
+            errors.append(f"V-5: expected message_count=3, got {ready}")
 
-        if len(out) != 12:
-            errors.append(f"V-1: expected 12 messages from quorum queue, got {len(out)}")
-        else:
-            # First 6 deliveries must prioritize high-priority messages over normal backlog
-            high_in_first_half = sum(1 for m in out[:6] if m.startswith("H"))
-            if high_in_first_half < 4:
-                errors.append(
-                    f"V-1: quorum priority did not preempt normal messages (order={out})"
-                )
+        consumer_conn = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
+        try:
+            tags = []
+            for _ in range(2):
+                cch = consumer_conn.channel()
+                cch.basic_qos(prefetch_count=1)
+                tags.append(cch.basic_consume(q, lambda *_: None, auto_ack=False))
+            consumer_conn.process_data_events(time_limit=0.5)
+            consumers = ch.queue_declare(queue=q, passive=True).method.consumer_count
+            if consumers != 2:
+                errors.append(f"V-5: expected consumer_count=2, got {consumers}")
+        finally:
+            consumer_conn.close()
+        ch.queue_delete(queue=q)
     finally:
         conn.close()
     return errors
@@ -111,11 +95,9 @@ def main() -> int:
     if dead.get("name") != "dm.tasks.dead":
         errors.append("V-4: dm.tasks.dead queue missing")
 
-    # V-1: quorum task queue + runtime priority preemption test
     if args.get("x-queue-type") != "quorum":
-        errors.append("V-1: dm.tasks is not a quorum queue")
-    else:
-        errors.extend(verify_quorum_priority())
+        errors.append("dm.tasks is not a quorum queue")
+    errors.extend(verify_dispatch_signals())
 
     if errors:
         for e in errors:
@@ -123,8 +105,8 @@ def main() -> int:
         return 1
 
     print(
-        "ok RabbitMQ V-1..V-4: quorum priority preemption verified, consumer-timeout 900000, "
-        "coordinator delivery-limit 1000000, DLX -> dm.tasks.dead"
+        "ok RabbitMQ: consumer-timeout 900000 (V-2), coordinator delivery-limit 1000000 (V-3), "
+        "DLX -> dm.tasks.dead (V-4), passive declare reports depth + consumers (V-5)"
     )
     return 0
 

@@ -608,6 +608,12 @@ table.data tr:last-child td {
   padding: 0.5rem 0;
 }
 
+.field-error {
+  width: 100%;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
 .header-controls {
   display: flex;
   flex-wrap: wrap;

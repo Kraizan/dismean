@@ -26,7 +26,7 @@ What the user gets or sees. Entries are never deleted; a superseded entry is kep
 
 ### IPD-005: Jobs run in publish order
 **Status:** Superseded by IPD-014 · **Date:** 2026-10-23
-- Jobs run in FIFO task order. The rule that jobs can be submitted any time with no limit carries over into IPD-014.
+- Jobs run in FIFO task order. The rule that jobs can be submitted any time with no limit carries over into IPD-014 and IPD-016.
 
 ### IPD-006: Cancel
 **Status:** Accepted · **Date:** 2026-10-23
@@ -74,12 +74,15 @@ What the user gets or sees. Entries are never deleted; a superseded entry is kep
   Actions: submit, cancel, delete, download, cleanup.
 
 ### IPD-014: Jobs that are reducing finish first
-**Status:** Accepted · **Date:** 2026-10-25 · **Supersedes:** IPD-005
+**Status:** Superseded by IPD-016 · **Date:** 2026-10-25 · **Supersedes:** IPD-005
+- Jobs could be submitted any time; merge work was meant to be preferred 2:1. In practice the broker served merges strictly first and small jobs waited behind big ones.
+
+### IPD-016: Active jobs share the workers fairly
+**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-014
 - **Decision:**
   - Jobs can be submitted any time, with no limit.
-  - Merge work is preferred over generation 2:1 (ITD-020), so a job that has started reducing finishes quickly while others keep generating.
-  - No strict per-job fairness.
-- **Consequences:** jobs finish roughly in submission order. A small job submitted during a big job's generation waits behind it (future-work §1).
+  - Every active job gets an equal share of task slots, round-robin (ITD-034). Within a job, merges run before generation.
+- **Consequences:** a small job submitted behind a large one finishes in about the time it would take alone with W/N workers, instead of waiting for the large job. A single large job still uses the whole fleet.
 
 ### IPD-015: Configurable worker count W via API and UI
 **Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-008

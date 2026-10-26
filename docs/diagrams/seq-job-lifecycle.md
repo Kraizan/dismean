@@ -19,8 +19,9 @@ sequenceDiagram
   API-->>U: 201 {job, estimate}
   API--)RL: signal
 
-  RL->>DB: SELECT CREATED ... FOR UPDATE SKIP LOCKED
-  RL->>MQ: publish 3 GENERATE messages (priority 0, confirm)
+  RL->>MQ: passive declare dm.tasks (ready, consumers) → budget = 2 × consumers − ready
+  RL->>DB: round-robin pick of CREATED tasks (≤ budget) ... FOR UPDATE SKIP LOCKED
+  RL->>MQ: publish 3 GENERATE messages (confirm)
   MQ-->>RL: confirms
   RL->>DB: UPDATE tasks SET PUBLISHED
 
@@ -42,7 +43,7 @@ sequenceDiagram
     CO->>MQ: ack
   end
 
-  RL->>MQ: publish MERGE A, B (priority 9, ahead of other jobs' GENERATE at 2:1)
+  RL->>MQ: publish MERGE A, B (merges before this job's GENERATE; other jobs get their own slots in the same round)
   MQ->>W: MERGE B (fast worker)
   W->>FS: read 5 inputs, write partial P_B (int64)
   W->>MQ: task.completed {count:5}

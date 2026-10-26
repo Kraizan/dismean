@@ -47,7 +47,7 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
   - Completions add to `jobs.generated_files`.
   - The completion that reaches F does all of this in one transaction: seed the pool, create the leaf merges, set `REDUCING`.
 - **Why:** parallel generation in the same task model as merging. Rejected: the API generating files (a bottleneck), 1-file tasks (F messages), size-based batches.
-- **Consequences:** an exact barrier. Idle time is at most one GENERATE task, and other jobs fill it (ITD-020).
+- **Consequences:** an exact barrier. Idle time is at most one GENERATE task, and other jobs fill it (ITD-034).
 
 ### ITD-008: Liveness via RabbitMQ acks and consumer timeout
 **Status:** Accepted · **Date:** 2026-10-23
@@ -121,7 +121,8 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 **Status:** Accepted (delegated) · **Date:** 2026-10-23
 - **Decision:**
   - API: express, pg, amqplib, zod, vitest, npm, plain SQL migrations.
-  - Worker: pika, numpy, pytest, uv.
+  - Worker: pika, numpy, pytest; installed with pip into a venv.
+  - UI tests: vitest (ITD-036).
 - **Why:** mainstream and free. Rejected: aio-pika (the compute still needs a thread), an ORM (3 tables).
 
 ### ITD-018: The final merge writes the mean
@@ -134,10 +135,8 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 - `workers` and `events` tables, plus an SSE stream. Replaced by in-memory state and polling.
 
 ### ITD-020: Two priority levels: MERGE high, GENERATE normal
-**Status:** Accepted · **Date:** 2026-10-25 · **Supersedes:** ITD-003
-- **Decision:** one quorum queue. MERGE is published at priority 9, GENERATE at 0. RabbitMQ 4 quorum queues have two levels (above 4 counts as high) and deliver them 2:1, so neither starves.
-- **Why:** with FIFO, a nearly finished job waited behind later jobs' backlogs. Rejected: a fair-share dispatcher (extra component, future-work §1); per-level priority (needs classic queues, future-work §2).
-- **Consequences:** jobs that are reducing finish quickly, and jobs finish roughly in submission order. Within the high level, leaf merges still run before merges of partials. Verify V-1.
+**Status:** Superseded by ITD-034 · **Date:** 2026-10-25 · **Supersedes:** ITD-003
+- MERGE at priority 9, GENERATE at 0 on one quorum queue, assuming 2:1 delivery. Tested on `rabbitmq:4-management` (2026-10-26), the queue delivered every high-priority message before any normal one, so a reducing job blocked every other job's generation. Replaced by fair-share dispatch.
 
 ### ITD-021: Workers exit on any broker error
 **Status:** Accepted · **Date:** 2026-10-25
@@ -221,4 +220,34 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 **Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** ITD-015
 - **Decision:** a one-row `fleet(id=1, desired_workers)` table in Postgres stores target `W` (`1..32`, seeded to `WORKER_COUNT`). The API exposes `GET /fleet` and `PUT /fleet {desired_workers}`. The supervisor polls `GET /fleet` every `FLEET_POLL_INTERVAL_S` (1.5 s): scaling up spawns new worker slots; scaling down sends `SIGTERM` to excess slots so they stop consuming, finish any in-flight task, emit a `STOPPED` heartbeat, and exit cleanly.
 - **Why:** workers remain decoupled from the API process (invariant 1: workers still never touch Postgres; only the supervisor polls the HTTP API).
-- **Consequences:** dynamic scaling at runtime with zero lost work.
+- **Consequences:** dynamic scaling at runtime with zero lost work. W is per supervisor: two supervisors on two hosts would each run W. Refined by ITD-035.
+
+### ITD-033: The API exits when it loses RabbitMQ; a restart loop brings it back
+**Status:** Accepted · **Date:** 2026-10-26
+- **Decision:**
+  - Any AMQP connection or channel `error`/`close` outside shutdown logs and `exit(1)`, the same rule as workers (ITD-021).
+  - A coordinator error that is neither a DB outage nor handled by failing the job also exits; the unacked message is redelivered after the restart.
+  - `scripts/run-api.sh` restarts the API with backoff (1 s doubling to 30 s, reset after 60 s healthy). Locally the API runs under it; in production, the container orchestrator plays this role.
+  - `/health` reports AMQP from the connection state instead of opening a channel per request.
+- **Why:** before this, a broker restart either crashed the API on an unhandled `error` event or left the coordinator silently consuming nothing, so jobs hung (invariant 13). Rejected: reconnecting in-process (every consumer, channel and the relay would need rebuilding, with more states to get wrong).
+- **Consequences:** a broker blip costs a few seconds of API downtime; in-memory events reset (as on any restart). Checked by `scripts/e2e-broker-restart.py`.
+
+### ITD-034: Fair-share dispatch from the outbox relay
+**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** ITD-020
+- **Decision:**
+  - Tasks wait in Postgres as `CREATED`. The relay publishes only into free slots: `budget = DISPATCH_QUEUE_FACTOR × consumers − ready`, read from a passive declare of `dm.tasks` (V-5), capped at `RELAY_BATCH`.
+  - Order: one task per active job per round, starting after the job served last (a rotating cursor); within a job, MERGE before GENERATE and deeper merges first.
+  - The coordinator signals the relay after every applied message, since each one frees a worker slot.
+  - Messages carry no priority.
+- **Why:** strict queue priority let one reducing job block all other jobs' generation, and FIFO made small jobs wait behind big ones. Rejected: a separate dispatcher process (the relay already owns publishing, so invariant 3 still holds); per-level priority on a classic queue (loses the quorum delivery limit).
+- **Consequences:** a small job submitted behind a large one finishes first (checked by `scripts/e2e-fairness.py`). The queue holds about 2 tasks per worker, so per-job ordering is enforced in SQL rather than by the broker. Each relay tick runs one window query over `CREATED` tasks.
+
+### ITD-035: Fleet target source and drain order
+**Status:** Accepted (delegated) · **Date:** 2026-10-26 · **Refines:** ITD-032
+- **Decision:** `fleet.set_by_api` records whether an operator has set W. Until then, each API start resets W to `WORKER_COUNT`. On scale-down the supervisor drains idle workers first (matched by pid from `GET /fleet`), then the newest busy ones. A slot's restart backoff resets after 60 s of healthy running.
+- **Why:** the first migration seeded W = 4 and the startup insert never overrode it, so `WORKER_COUNT` was ignored; draining busy workers first wasted in-flight work.
+
+### ITD-036: UI tests on extracted pure logic
+**Status:** Accepted (delegated) · **Date:** 2026-10-26
+- **Decision:** formatting, estimates, validation and event/job filtering live in `ui/src/format.ts` and are tested with vitest (same runner as the API). No DOM test library.
+- **Why:** these are the parts that hold logic; rendering is checked manually and by the browser smoke test. Rejected: jsdom plus Testing Library (more dependencies for little extra coverage at this size).

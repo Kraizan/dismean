@@ -50,6 +50,44 @@ async function deleteTmpFiles(jobDir: string): Promise<number> {
   return deleted;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Job directories with no job row. A worker still finishing a task of a just-deleted job
+ * can recreate its directory; the row is always inserted before any task is published.
+ */
+async function deleteOrphanJobDirs(
+  pool: pg.Pool,
+  config: Config,
+): Promise<{ files: number; bytes: number }> {
+  const jobsRoot = path.join(config.DATA_DIR, "jobs");
+  let names: string[];
+  try {
+    names = (await readdir(jobsRoot, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && UUID_RE.test(d.name))
+      .map((d) => d.name);
+  } catch {
+    return { files: 0, bytes: 0 };
+  }
+  if (names.length === 0) return { files: 0, bytes: 0 };
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT id FROM jobs WHERE id = ANY($1::uuid[])`,
+    [names],
+  );
+  const known = new Set(rows.map((r) => r.id));
+  let files = 0;
+  let bytes = 0;
+  for (const name of names) {
+    if (known.has(name)) continue;
+    const dir = path.join(jobsRoot, name);
+    const size = await dirSize(dir);
+    await rm(dir, { recursive: true, force: true });
+    files += size.files;
+    bytes += size.bytes;
+  }
+  return { files, bytes };
+}
+
 export async function runCleanup(
   pool: pg.Pool,
   config: Config,
@@ -96,6 +134,10 @@ export async function runCleanup(
     );
     jobsCleaned += 1;
   }
+
+  const orphans = await deleteOrphanJobDirs(pool, config);
+  filesDeleted += orphans.files;
+  bytesFreed += orphans.bytes;
 
   pushEvent({
     type: "cleanup_ran",

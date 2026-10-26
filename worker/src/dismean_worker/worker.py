@@ -331,6 +331,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    logging.getLogger("pika").setLevel(logging.WARNING)
 
     rt = WorkerRuntime(
         worker_id=_worker_id(),
@@ -341,7 +342,12 @@ def main() -> None:
     )
 
     def _sigterm(_signum: int, _frame: Any) -> None:
-        _begin_drain(rt)
+        # Signal handlers may interrupt pika mid-frame; run the AMQP calls on the connection's own loop.
+        conn = rt.connection
+        if conn is not None and conn.is_open:
+            conn.add_callback_threadsafe(lambda: _begin_drain(rt))
+        else:
+            sys.exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGINT, _sigterm)

@@ -14,6 +14,7 @@ import { RELAY_SIGNAL } from "../coordinator/index.js";
 import { streamCsvFile } from "../storage/csv.js";
 import { streamNpyAsCsv } from "../storage/npy.js";
 import { deleteJobDir } from "../storage/deleteJobDir.js";
+import { formatJob, formatJobs } from "./jobFormat.js";
 import crypto from "node:crypto";
 
 const uuidParamSchema = z.string().uuid();
@@ -37,133 +38,8 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().nonnegative().default(0),
 });
 
-function mergeTaskEstimate(f: number): number {
-  return Math.ceil((f - 1) / 4);
-}
-
-export function jobEstimate(f: number, c: number) {
-  const merge_tasks = mergeTaskEstimate(f);
-  return {
-    input_bytes: f * c,
-    peak_partial_bytes: (merge_tasks - 1) * 8 * c,
-    generate_tasks: Math.ceil(f / 5),
-    merge_tasks,
-  };
-}
-
-async function taskCounts(pool: pg.Pool, jobId: string) {
-  const { rows } = await pool.query<{ kind: string; status: string; count: string }>(
-    `SELECT kind::text, status::text, count(*)::text AS count
-     FROM tasks WHERE job_id = $1 GROUP BY kind, status`,
-    [jobId],
-  );
-  const tasks: Record<string, Record<string, number>> = {
-    GENERATE: {},
-    MERGE: {},
-  };
-  for (const row of rows) {
-    const bucket = tasks[row.kind] ?? {};
-    bucket[row.status] = Number(row.count);
-    tasks[row.kind] = bucket;
-  }
-  return tasks;
-}
-
-async function jobTimings(pool: pg.Pool, job: JobRow) {
-  const createdMs = job.created_at.getTime();
-  const genCompletedMs = job.generation_completed_at?.getTime() ?? null;
-  const finishedMs = job.finished_at?.getTime() ?? null;
-
-  const generation =
-    genCompletedMs !== null ? Math.max(0, genCompletedMs - createdMs) : null;
-  const reduction =
-    genCompletedMs !== null &&
-    finishedMs !== null &&
-    job.status === "COMPLETED"
-      ? Math.max(0, finishedMs - genCompletedMs)
-      : null;
-  const total =
-    finishedMs !== null ? Math.max(0, finishedMs - createdMs) : null;
-
-  return { generation, reduction, total };
-}
-
-async function reductionProgress(
-  pool: pg.Pool,
-  job: JobRow,
-): Promise<number> {
-  if (job.status === "COMPLETED") return 1;
-  if (job.status === "GENERATING") return 0;
-  const { rows } = await pool.query<{ sum: string | null }>(
-    `SELECT sum(count)::text AS sum FROM items
-     WHERE job_id = $1 AND state IN ('READY', 'RESERVED')`,
-    [job.id],
-  );
-  if (rows[0]?.sum === null || rows[0]?.sum === undefined) {
-    return 0;
-  }
-  const live = Number(rows[0].sum);
-  if (job.f <= 1) return 1;
-  return Math.max(0, Math.min(1, 1 - (live - 1) / (job.f - 1)));
-}
-
-async function poolBreakdown(pool: pg.Pool, jobId: string) {
-  const { rows } = await pool.query<{
-    kind: string;
-    state: string;
-    cnt: string;
-    covered: string;
-  }>(
-    `SELECT kind::text, state::text, count(*)::text AS cnt, coalesce(sum(count), 0)::text AS covered
-     FROM items WHERE job_id = $1 GROUP BY kind, state`,
-    [jobId],
-  );
-  const out: Record<string, { items: number; files_covered: number }> = {
-    READY: { items: 0, files_covered: 0 },
-    RESERVED: { items: 0, files_covered: 0 },
-    CONSUMED: { items: 0, files_covered: 0 },
-    DELETED: { items: 0, files_covered: 0 },
-  };
-  for (const r of rows) {
-    const cur = out[r.state] ?? { items: 0, files_covered: 0 };
-    cur.items += Number(r.cnt);
-    cur.files_covered += Number(r.covered);
-    out[r.state] = cur;
-  }
-  return out;
-}
-
-async function formatJob(pool: pg.Pool, job: JobRow) {
-  const tasks = await taskCounts(pool, job.id);
-  const pool_items = await poolBreakdown(pool, job.id);
-  const timings_ms = await jobTimings(pool, job);
-  const estimate = jobEstimate(job.f, job.c);
-  const progress = {
-    generation: job.generated_files / job.f,
-    reduction: await reductionProgress(pool, job),
-  };
-  return {
-    id: job.id,
-    f: job.f,
-    c: job.c,
-    status: job.status,
-    seed: Number(job.seed),
-    generated_files: job.generated_files,
-    failure_reason: job.failure_reason,
-    created_at: job.created_at.toISOString(),
-    generation_completed_at: job.generation_completed_at?.toISOString() ?? null,
-    finished_at: job.finished_at?.toISOString() ?? null,
-    partials_cleaned_at: job.partials_cleaned_at?.toISOString() ?? null,
-    progress,
-    tasks,
-    pool_items,
-    timings_ms,
-    estimate,
-  };
-}
-
 function randomSeed(): number {
-  // randomInt max must be a safe integer; seed fits in Postgres bigint.
+  // 48 bits: crypto.randomInt only accepts safe integers, and the seed must survive JSON.
   return Number(crypto.randomBytes(6).readUIntBE(0, 6));
 }
 
@@ -234,8 +110,7 @@ export function jobsRouter(
       }
       sql += ` ORDER BY created_at DESC LIMIT $1 OFFSET $2`;
       const { rows } = await pool.query<JobRow>(sql, params);
-      const jobs = await Promise.all(rows.map((j) => formatJob(pool, j)));
-      res.json({ jobs });
+      res.json({ jobs: await formatJobs(pool, rows) });
     } catch (err) {
       next(err);
     }

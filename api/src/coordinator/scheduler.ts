@@ -140,7 +140,8 @@ export async function barrier(
   return scheduled;
 }
 
-export async function liveItemCount(
+/** Input files covered by live pool items; equals F for every REDUCING job (LLD §2 invariant). */
+export async function liveFileCoverage(
   client: pg.PoolClient,
   jobId: string,
 ): Promise<number> {

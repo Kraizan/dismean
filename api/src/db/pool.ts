@@ -6,6 +6,8 @@ let pool: pg.Pool | null = null;
 export function getPool(config: Config): pg.Pool {
   if (!pool) {
     pool = new pg.Pool({ connectionString: config.DATABASE_URL });
+    // An idle client losing its connection must not crash the API; queries surface the outage instead.
+    pool.on("error", (err) => console.error("postgres idle client error", err.message));
   }
   return pool;
 }
