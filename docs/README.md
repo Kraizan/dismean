@@ -8,6 +8,7 @@ Read in this order: design doc (why), HLD (what), LLD (how). The decision logs r
 | [design-doc.md](design-doc.md) | Algorithm, job completion, multi-job behaviour, efficiency, trade-offs, tests |
 | [hld.md](hld.md) | Components, topology, data flow, deployment, production mapping, limits |
 | [lld.md](lld.md) | Schema, topology, messages, coordinator, relay, worker, API, config |
+| [code-map.md](code-map.md) | Every source path → role → LLD section (onboarding index) |
 | [decisions/itd.md](decisions/itd.md) | Technical decisions |
 | [decisions/ipd.md](decisions/ipd.md) | Product decisions |
 | [future-work.md](future-work.md) | Designed but not built |

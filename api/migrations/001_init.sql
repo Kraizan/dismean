@@ -1,3 +1,4 @@
+-- Core schema: jobs, tasks, pool items. See docs/code-map.md · LLD §2.
 CREATE TYPE job_status  AS ENUM ('GENERATING', 'REDUCING', 'COMPLETED', 'FAILED', 'CANCELLED');
 CREATE TYPE task_kind   AS ENUM ('GENERATE', 'MERGE');
 CREATE TYPE task_status AS ENUM ('CREATED', 'PUBLISHED', 'DONE', 'FAILED', 'CANCELLED');

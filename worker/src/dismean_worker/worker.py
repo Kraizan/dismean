@@ -1,3 +1,4 @@
+"""AMQP worker: consume tasks, heartbeats, SIGTERM drain. See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 import json

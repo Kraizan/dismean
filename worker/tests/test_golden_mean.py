@@ -1,4 +1,4 @@
-"""Golden reference: seeded generation + int64 sum matches final mean (design-doc §9)."""
+"""Golden numeric mean reference. See docs/code-map.md · design-doc §9."""
 from __future__ import annotations
 
 import numpy as np

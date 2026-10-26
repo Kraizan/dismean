@@ -1,3 +1,4 @@
+/** Build `/stats` from Postgres and RabbitMQ management API. See docs/code-map.md · LLD §10. */
 import type pg from "pg";
 import type { Config } from "../config.js";
 import { getDesiredWorkers } from "../routes/fleet.js";

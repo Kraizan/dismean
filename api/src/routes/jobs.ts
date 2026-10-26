@@ -1,3 +1,4 @@
+/** Job CRUD, cancel, delete, and result/input downloads. See docs/code-map.md · LLD §6, §10. */
 import { Router } from "express";
 import { access } from "node:fs/promises";
 import path from "node:path";

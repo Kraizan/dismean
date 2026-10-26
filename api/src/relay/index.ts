@@ -1,3 +1,4 @@
+/** Outbox relay and fair-share task dispatch (ITD-034). See docs/code-map.md · LLD §7. */
 import type { EventEmitter } from "node:events";
 import type { ChannelModel, ConfirmChannel } from "amqplib";
 import type pg from "pg";

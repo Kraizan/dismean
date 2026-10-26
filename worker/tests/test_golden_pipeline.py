@@ -1,4 +1,4 @@
-"""In-process generate + merge chain matches NumPy reference."""
+"""In-process pipeline golden test. See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 from pathlib import Path

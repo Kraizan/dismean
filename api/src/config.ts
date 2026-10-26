@@ -1,3 +1,4 @@
+/** Env configuration (zod). See docs/code-map.md · LLD §13. */
 import { z } from "zod";
 
 const configSchema = z.object({

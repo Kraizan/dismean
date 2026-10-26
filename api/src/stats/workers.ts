@@ -1,3 +1,4 @@
+/** Heartbeat consumer and in-memory worker registry. See docs/code-map.md · LLD §10. */
 import type { Channel, ChannelModel, ConsumeMessage } from "amqplib";
 import type { Config } from "../config.js";
 import { pushEvent } from "../events.js";

@@ -1,3 +1,4 @@
+"""MERGE task: int64 sums and final mean output. See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 import numpy as np

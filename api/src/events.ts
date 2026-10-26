@@ -1,3 +1,4 @@
+/** In-memory event ring for SSE `/events`. See docs/code-map.md · LLD §10. */
 import type { Config } from "./config.js";
 
 export type EventType =

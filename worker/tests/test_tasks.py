@@ -1,3 +1,4 @@
+"""Generate/merge task IO tests. See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 import os

@@ -1,3 +1,4 @@
+/** Single coordinator consumer: one txn per message, ack after commit. See docs/code-map.md · LLD §5. */
 import type { Channel, ChannelModel, ConsumeMessage } from "amqplib";
 import type { EventEmitter } from "node:events";
 import type pg from "pg";

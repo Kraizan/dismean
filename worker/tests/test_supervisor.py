@@ -1,3 +1,4 @@
+"""Supervisor scale-down prefers idle workers. See docs/code-map.md · LLD §9."""
 from __future__ import annotations
 
 import signal

@@ -1,3 +1,4 @@
+"""Task message shape checks (ITD-025). See docs/code-map.md · LLD §4."""
 from __future__ import annotations
 
 from typing import Any, Literal, TypedDict, cast

@@ -1,3 +1,4 @@
+/** Job list/detail DTOs (tasks, pool, timings). See docs/code-map.md · LLD §10. */
 import type pg from "pg";
 import type { JobRow } from "../db/types.js";
 import { reductionProgress } from "../stats/progress.js";

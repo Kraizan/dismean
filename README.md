@@ -1,6 +1,6 @@
 # dismean
 
-Distributed Mean: compute per-index means of many files using a worker fleet. See [docs/design-doc.md](docs/design-doc.md).
+Distributed Mean: compute per-index means of many files using a worker fleet. See [docs/design-doc.md](docs/design-doc.md). Source orientation: [docs/code-map.md](docs/code-map.md).
 
 ## Prerequisites
 

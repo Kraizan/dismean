@@ -1,3 +1,4 @@
+"""Parse contracts/examples JSON. See docs/code-map.md · ITD-025."""
 import json
 from pathlib import Path
 

@@ -1,3 +1,4 @@
+/** Periodic partial and orphan directory cleanup. See docs/code-map.md · LLD §12. */
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type pg from "pg";

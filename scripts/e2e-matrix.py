@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run e2e for several f values (generation + reduction edge sizes)."""
+"""E2E across several F/C sizes. See docs/code-map.md."""
 import os
 import sys
 

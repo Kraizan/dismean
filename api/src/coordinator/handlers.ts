@@ -1,3 +1,4 @@
+/** Routes coordinator payloads to completion / failure / dead handlers. See docs/code-map.md · LLD §5. */
 import type pg from "pg";
 import type { Channel } from "amqplib";
 import { pushEvent } from "../events.js";

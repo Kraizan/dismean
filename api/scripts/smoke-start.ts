@@ -1,3 +1,4 @@
+/** CI smoke: migrate, connect AMQP, exit. See docs/code-map.md. */
 import amqp from "amqplib";
 import { loadConfig } from "../src/config.js";
 import { getPool } from "../src/db/pool.js";

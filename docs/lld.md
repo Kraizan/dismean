@@ -41,6 +41,8 @@ data/                    DATA_DIR default (gitignored)
 docker-compose.yml
 ```
 
+**File-by-file roles:** [code-map.md](code-map.md) (keep in sync when adding or renaming paths).
+
 ## 2. Database schema (Postgres 16)
 
 ```sql

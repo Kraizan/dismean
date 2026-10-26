@@ -1,3 +1,4 @@
+/** Fleet size GET/PUT and dead-worker prune. See docs/code-map.md · LLD §10. */
 import { Router } from "express";
 import type pg from "pg";
 import { z } from "zod";

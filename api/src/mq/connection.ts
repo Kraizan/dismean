@@ -1,3 +1,4 @@
+/** AMQP connect, topology check, publish helpers; exit on broker loss (ITD-033). See docs/code-map.md · LLD §3. */
 import amqp from "amqplib";
 import type { Channel, ChannelModel, ConfirmChannel } from "amqplib";
 import type { Config } from "../config.js";

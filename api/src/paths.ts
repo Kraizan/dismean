@@ -1,3 +1,4 @@
+/** Sole builder for job file paths (ITD-028). See docs/code-map.md · LLD §11. */
 export function inputPrefix(jobId: string): string {
   return `jobs/${jobId}/inputs/`;
 }

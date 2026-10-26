@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E test for configurable worker fleet size W via GET/PUT /fleet."""
+"""Dynamic W via GET/PUT /fleet. See docs/code-map.md · LLD §9–10."""
 import json
 import os
 import sys

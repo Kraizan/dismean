@@ -1,3 +1,4 @@
+"""Reconcile worker processes to GET /fleet. See docs/code-map.md · LLD §9."""
 from __future__ import annotations
 
 import json

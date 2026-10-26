@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E test without curl (works when shell curl is redirected)."""
+"""Happy-path E2E job to bit-exact mean. See docs/code-map.md."""
 import io
 import json
 import os

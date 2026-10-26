@@ -1,10 +1,8 @@
+/** Uint8 `.npy` parse and CSV streaming for downloads. See docs/code-map.md · LLD §10. */
 import { readFile } from "node:fs/promises";
 import type { Response } from "express";
 
-/**
- * Minimal NumPy .npy v1.0 / v2.0 1D uint8 array parser.
- * Avoids writing duplicate CSV files on disk during generation.
- */
+/** Minimal NumPy .npy v1.0 / v2.0 1D uint8 array parser. */
 export function parseUint8Npy(buf: Buffer): Uint8Array {
   // Magic: \x93NUMPY
   if (

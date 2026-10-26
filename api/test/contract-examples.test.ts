@@ -1,6 +1,8 @@
+/** Parse contracts/examples JSON. See docs/code-map.md · ITD-025. */
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+/** Parse contracts/examples JSON. See docs/code-map.md · ITD-025. */
 import { describe, expect, it } from "vitest";
 import {
   jobStoppedSchema,

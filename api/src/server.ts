@@ -1,3 +1,4 @@
+/** Express entry: wires DB, AMQP, coordinator, relay, cleanup, routes. See docs/code-map.md · LLD §10. */
 import express from "express";
 import { EventEmitter } from "node:events";
 import { loadConfig } from "./config.js";

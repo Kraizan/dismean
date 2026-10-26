@@ -1,3 +1,4 @@
+/** UI format and filter unit tests. See docs/code-map.md. */
 import { describe, expect, it } from "vitest";
 import {
   filterEvents,

@@ -1,3 +1,4 @@
+/** NPY streaming. See docs/code-map.md · LLD §10. */
 import { describe, expect, it } from "vitest";
 import { parseUint8Npy } from "../src/storage/npy.js";
 

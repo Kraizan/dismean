@@ -1,3 +1,4 @@
+/** Path layout vs barrier SQL. See docs/code-map.md · ITD-028. */
 import { describe, expect, it } from "vitest";
 import { inputPath, inputPrefix, partialPath, resultPaths } from "../src/paths.js";
 

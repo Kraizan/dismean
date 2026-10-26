@@ -1,2 +1,2 @@
--- Until an operator sets W through PUT /fleet, the API seeds it from WORKER_COUNT at startup.
+-- Until PUT /fleet, seed W from WORKER_COUNT. See docs/code-map.md · LLD §13.
 ALTER TABLE fleet ADD COLUMN set_by_api boolean NOT NULL DEFAULT false;

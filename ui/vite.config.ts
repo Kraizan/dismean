@@ -1,3 +1,4 @@
+/** Vite dev server; proxies `/api` to port 3000. See docs/code-map.md · ITD-029. */
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
