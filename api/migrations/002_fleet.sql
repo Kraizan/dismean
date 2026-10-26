@@ -1,4 +1,3 @@
--- Desired worker count W. See docs/code-map.md · LLD §2, §10.
 CREATE TABLE fleet (
   id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   desired_workers smallint NOT NULL DEFAULT 4 CHECK (desired_workers BETWEEN 1 AND 32),

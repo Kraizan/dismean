@@ -1,4 +1,3 @@
-/** Single coordinator consumer: one txn per message, ack after commit. See docs/code-map.md · LLD §5. */
 import type { Channel, ChannelModel, ConsumeMessage } from "amqplib";
 import type { EventEmitter } from "node:events";
 import type pg from "pg";
@@ -10,7 +9,6 @@ import { parseCoordinatorPayload } from "../messages.js";
 import {
   QUEUE_COORDINATOR,
   QUEUE_DEAD,
-  passiveDeclareQueues,
   publishJobStopped,
 } from "../mq/connection.js";
 import { failJob, type PendingEvent } from "./failJob.js";
@@ -88,7 +86,6 @@ async function processMessage(
       job,
       parsed,
       config,
-      controlCh,
     );
     await client.query("COMMIT");
     ch.ack(msg);
@@ -223,7 +220,6 @@ export async function startCoordinator(
   const channels: Channel[] = [];
 
   const coordCh = await conn.createChannel();
-  await passiveDeclareQueues(coordCh);
   await coordCh.prefetch(50);
   await coordCh.consume(
     QUEUE_COORDINATOR,

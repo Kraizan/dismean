@@ -1,4 +1,3 @@
-/** Liveness probe. See docs/code-map.md · LLD §10. */
 import { Router } from "express";
 import type pg from "pg";
 import { amqpConnected } from "../mq/connection.js";

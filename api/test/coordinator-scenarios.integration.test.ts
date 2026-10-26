@@ -1,4 +1,3 @@
-/** Barrier, merge tail, final result. See docs/code-map.md · LLD §5. */
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
@@ -138,7 +137,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
         worker_id: "w",
         error: { type: "TestError", message: "boom" },
       };
-      const result = await onFailed(client, job, fail, config, null);
+      const result = await onFailed(client, job, fail, config);
       expect(result.jobStopped).toBe(true);
       const after = await loadJob(client, jobId);
       expect(after.status).toBe("FAILED");
@@ -170,8 +169,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
         worker_id: "w",
         error: { type: "TestError", message: "retry me" },
       };
-      const result = await onFailed(client, job, fail, config, null);
-      expect(result.relaySignal).toBe(true);
+      const result = await onFailed(client, job, fail, config);
       expect(result.jobStopped).toBe(false);
       const { rows } = await client.query<{ status: string; attempt: number }>(
         `SELECT status::text, attempt FROM tasks WHERE id = $1`,
@@ -207,7 +205,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
         c: 3,
         generate: { seed: 1, file_indices: [0], output_paths: ["jobs/x/inputs/000000.npy"] },
       };
-      const result = await onDead(client, job, dead, null);
+      const result = await onDead(client, job, dead);
       expect(result.jobStopped).toBe(true);
       const after = await loadJob(client, jobId);
       expect(after.status).toBe("FAILED");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP validation, cancel, delete. See docs/code-map.md · LLD §10."""
+"""HTTP API validation, non-UUID 404s, cancel, and delete flow."""
 import json
 import os
 import sys

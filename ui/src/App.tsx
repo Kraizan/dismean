@@ -1,4 +1,3 @@
-/** Ops dashboard (jobs, fleet, events). See docs/code-map.md · LLD §10, ITD-029. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   eventClass,

@@ -1,4 +1,3 @@
-/** Fair-share dispatch ordering. See docs/code-map.md · ITD-034. */
 import { describe, expect, it } from "vitest";
 
 /**

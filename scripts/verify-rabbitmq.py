@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RabbitMQ topology checks (V-1–V-5). See docs/code-map.md · open-questions.md."""
+"""Verify RabbitMQ assumptions from docs/open-questions.md (V-1–V-5)."""
 import base64
 import json
 import os

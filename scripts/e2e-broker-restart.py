@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RabbitMQ restart recovery (ITD-033). See docs/code-map.md."""
+"""Restart RabbitMQ: the API and workers must exit, come back through their restart loops, and run jobs again (ITD-021, ITD-033)."""
 import json
 import os
 import subprocess

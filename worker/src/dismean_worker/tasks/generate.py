@@ -1,4 +1,3 @@
-"""GENERATE task: seeded uint8 files (≤5 per task). See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 import numpy as np

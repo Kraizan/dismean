@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small job overtakes large backlog (ITD-034). See docs/code-map.md · LLD §7."""
+"""A small job submitted behind a large one must finish first (fair-share dispatch, ITD-034)."""
 import os
 import sys
 import time

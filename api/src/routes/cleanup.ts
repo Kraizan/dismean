@@ -1,4 +1,3 @@
-/** HTTP triggers for storage cleanup and stats. See docs/code-map.md · LLD §12. */
 import { Router } from "express";
 import type pg from "pg";
 import type { Config } from "../config.js";

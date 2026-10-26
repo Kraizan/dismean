@@ -1,4 +1,3 @@
-/** Postgres pool and DB availability helper. See docs/code-map.md · LLD §2. */
 import pg from "pg";
 import type { Config } from "../config.js";
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ITD-027 wall-clock benchmark (optional). See docs/code-map.md. Default f=500; BENCHMARK_F=20000 for full spec."""
+"""ITD-027 wall-clock benchmark (optional). Default f=500; set BENCHMARK_F=20000 for full spec."""
 import json
 import os
 import sys

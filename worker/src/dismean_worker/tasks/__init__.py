@@ -1,4 +1,3 @@
-"""Dispatch GENERATE vs MERGE task handlers. See docs/code-map.md · LLD §8."""
 from __future__ import annotations
 
 from typing import Any

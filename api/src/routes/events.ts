@@ -1,4 +1,3 @@
-/** Server-sent events stream. See docs/code-map.md · LLD §10. */
 import { Router } from "express";
 import { z } from "zod";
 import { getEvents } from "../events.js";

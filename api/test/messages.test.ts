@@ -1,4 +1,3 @@
-/** Message zod parsing. See docs/code-map.md · LLD §4. */
 import { describe, expect, it } from "vitest";
 import {
   parseCoordinatorPayload,

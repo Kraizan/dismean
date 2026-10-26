@@ -1,4 +1,3 @@
-"""Worker env config. See docs/code-map.md · LLD §13."""
 import os
 from pathlib import Path
 

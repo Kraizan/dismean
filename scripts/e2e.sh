@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Wrapper for scripts/e2e.py. See docs/code-map.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export DATA_DIR="${DATA_DIR:-$ROOT/data}"

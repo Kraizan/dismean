@@ -1,4 +1,3 @@
-/** Reduction progress formula. See docs/code-map.md · LLD §5. */
 import { describe, expect, it } from "vitest";
 import { reductionProgress } from "../src/stats/progress.js";
 

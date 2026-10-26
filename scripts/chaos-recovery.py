@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SIGKILL workers in flight; job must still finish. See docs/code-map.md."""
+"""SIGKILL every worker while tasks are in flight, three times; the job must still finish with the exact mean."""
 import json
 import os
 import signal

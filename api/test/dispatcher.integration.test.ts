@@ -1,4 +1,3 @@
-/** Fair-share relay SQL integration. See docs/code-map.md · LLD §7. */
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";

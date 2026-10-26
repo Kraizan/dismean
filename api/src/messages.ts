@@ -1,4 +1,3 @@
-/** Zod parsers for all AMQP message shapes. See docs/code-map.md · LLD §4. */
 import { z } from "zod";
 
 const uuid = z.string().uuid();

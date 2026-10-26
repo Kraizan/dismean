@@ -223,8 +223,4 @@ Onboarding index: every tracked source path → what it does → where the desig
 
 ## Maintenance
 
-When you add a file under `api/src`, `worker/src`, `ui/src`, `scripts/`, `contracts/`, or `api/migrations/`:
-
-1. Add a row to the matching section above.
-2. Add a one-line pointer at the top of the source file: `See docs/code-map.md` and the LLD section.
-3. If behaviour changed, update [lld.md](lld.md) in the same change.
+When you add, rename, or remove a file, update the matching section above and, if behaviour changed, update [lld.md](lld.md) in the same change.

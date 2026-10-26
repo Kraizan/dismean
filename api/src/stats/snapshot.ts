@@ -1,4 +1,3 @@
-/** Build `/stats` from Postgres and RabbitMQ management API. See docs/code-map.md · LLD §10. */
 import type pg from "pg";
 import type { Config } from "../config.js";
 import { getDesiredWorkers } from "../routes/fleet.js";
@@ -98,9 +97,7 @@ export async function buildStatsSnapshot(
   };
 
   for (const row of jobCounts) {
-    if (row.status === "GENERATING") {
-      jobs.GENERATING = Number(row.count);
-    } else if (row.status in jobs) {
+    if (row.status in jobs) {
       jobs[row.status] = Number(row.count);
     }
   }

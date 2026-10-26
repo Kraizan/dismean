@@ -1,4 +1,3 @@
-/** Pool scheduler integration. See docs/code-map.md · LLD §5. */
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";

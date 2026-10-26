@@ -1,4 +1,3 @@
-/** Remove a job tree under `DATA_DIR`. See docs/code-map.md · LLD §11. */
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "../config.js";

@@ -17,8 +17,6 @@ export type TaskStatus =
 export type ItemKind = "INPUT" | "PARTIAL";
 export type ItemState = "READY" | "RESERVED" | "CONSUMED" | "DELETED";
 
-/** Typed rows for jobs, tasks, pool items, fleet. See docs/code-map.md · LLD §2. */
-
 export interface JobRow {
   id: string;
   f: number;

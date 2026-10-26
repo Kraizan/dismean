@@ -1,4 +1,3 @@
-"""Task message shape checks (ITD-025). See docs/code-map.md · LLD §4."""
 from __future__ import annotations
 
 from typing import Any, Literal, TypedDict, cast
@@ -33,17 +32,6 @@ class MergePayload(TypedDict):
     final: bool
     total_count: int | None
     result_paths: ResultPaths | None
-
-
-class TaskMessage(TypedDict):
-    schema_version: SchemaVersion
-    task_id: str
-    job_id: str
-    attempt: int
-    kind: TaskKind
-    c: int
-    generate: GeneratePayload
-    merge: MergePayload
 
 
 class GenerateTaskMessage(TypedDict):

@@ -80,7 +80,7 @@ Entry template:
 
 ## Conventions
 
-- Onboarding: [`docs/code-map.md`](docs/code-map.md) maps each source file to its role and LLD section; add a row and a one-line file header when you add paths.
+- Onboarding: [`docs/code-map.md`](docs/code-map.md) maps each source file to its role and LLD section; add a row when you add paths.
 - Match surrounding style. Comments only for constraints the code can't show.
 - TypeScript in `strict` mode. Validate HTTP and queue input with zod at the boundary.
 - Python: type hints, NumPy for array work, no per-element loops.

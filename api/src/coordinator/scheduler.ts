@@ -1,4 +1,3 @@
-/** Generation barrier and dynamic pool MERGE scheduling. See docs/code-map.md · LLD §5. */
 import type pg from "pg";
 import { pushEvent } from "../events.js";
 import type { JobRow } from "../db/types.js";

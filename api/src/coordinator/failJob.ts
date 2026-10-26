@@ -1,4 +1,3 @@
-/** Mark job FAILED and queue post-commit events. See docs/code-map.md · LLD §5. */
 import type pg from "pg";
 import { pushEvent, type AppEvent } from "../events.js";
 import type { JobRow } from "../db/types.js";

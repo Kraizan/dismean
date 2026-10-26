@@ -1,4 +1,3 @@
-/** Heartbeat consumer and in-memory worker registry. See docs/code-map.md · LLD §10. */
 import type { Channel, ChannelModel, ConsumeMessage } from "amqplib";
 import type { Config } from "../config.js";
 import { pushEvent } from "../events.js";
@@ -34,10 +33,6 @@ interface WorkerEntry {
 }
 
 const workers = new Map<string, WorkerEntry>();
-
-export function getWorkerMap(): Map<string, WorkerEntry> {
-  return workers;
-}
 
 export async function startHeartbeatConsumer(
   conn: ChannelModel,

@@ -1,4 +1,3 @@
-/** Stream on-disk CSV for HTTP download. See docs/code-map.md · LLD §10. */
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";

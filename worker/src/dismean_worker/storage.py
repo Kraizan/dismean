@@ -1,4 +1,3 @@
-"""Atomic temp-file writes (ITD-026). See docs/code-map.md · LLD §8."""
 import os
 from pathlib import Path
 from uuid import uuid4

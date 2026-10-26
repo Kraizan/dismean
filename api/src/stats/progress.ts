@@ -1,5 +1,5 @@
 /**
- * Reduction progress from live pool items (READY or RESERVED); see docs/code-map.md · LLD §5.
+ * Reduction progress from the number of live pool items (rows READY or RESERVED).
  * Each merge of k items removes k−1 rows, so rows fall from F to 1 as the job reduces.
  */
 export function reductionProgress(

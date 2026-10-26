@@ -1,6 +1,4 @@
-/** Routes coordinator payloads to completion / failure / dead handlers. See docs/code-map.md · LLD §5. */
 import type pg from "pg";
-import type { Channel } from "amqplib";
 import { pushEvent } from "../events.js";
 import type { Config } from "../config.js";
 import type { JobRow, TaskRow } from "../db/types.js";
@@ -15,7 +13,6 @@ import { failJob, type PendingEvent } from "./failJob.js";
 import { barrier, schedule } from "./scheduler.js";
 
 export interface HandlerResult {
-  relaySignal: boolean;
   jobStopped: boolean;
   jobId?: string;
   stopStatus?: "FAILED" | "CANCELLED";
@@ -28,7 +25,6 @@ export async function onCompleted(
   msg: TaskCompleted,
 ): Promise<HandlerResult> {
   const result: HandlerResult = {
-    relaySignal: false,
     jobStopped: false,
     events: [],
   };
@@ -60,7 +56,6 @@ export async function onCompleted(
     );
     if (updated && updated.generated_files === job.f) {
       await barrier(client, job, result.events);
-      result.relaySignal = true;
     }
   } else {
     await client.query(
@@ -80,7 +75,7 @@ export async function onCompleted(
          VALUES (gen_random_uuid(), $1, 'PARTIAL', $2, $3, $4, $5, 'READY')`,
         [job.id, task.input_count, task.level, relPath, task.id],
       );
-      result.relaySignal = await schedule(client, job);
+      await schedule(client, job);
     }
   }
   return result;
@@ -91,10 +86,8 @@ export async function onFailed(
   job: JobRow,
   msg: TaskFailed,
   config: Config,
-  _controlCh: Channel | null,
 ): Promise<HandlerResult> {
   const result: HandlerResult = {
-    relaySignal: false,
     jobStopped: false,
     events: [],
   };
@@ -126,7 +119,6 @@ export async function onFailed(
       task_id: task.id,
       message: msg.error.message,
     });
-    result.relaySignal = true;
   } else {
     await client.query(
       `UPDATE tasks SET status = 'FAILED', last_error = $2 WHERE id = $1`,
@@ -145,10 +137,8 @@ export async function onDead(
   client: pg.PoolClient,
   job: JobRow,
   msg: TaskMessage,
-  _controlCh: Channel | null,
 ): Promise<HandlerResult> {
   const result: HandlerResult = {
-    relaySignal: false,
     jobStopped: false,
     events: [],
   };
@@ -182,17 +172,16 @@ export async function routeMessage(
   job: JobRow,
   msg: CoordinatorMessage,
   config: Config,
-  controlCh: Channel | null,
 ): Promise<HandlerResult> {
   switch (msg.routingKey) {
     case "task.completed":
       return onCompleted(client, job, msg.body);
     case "task.failed":
-      return onFailed(client, job, msg.body, config, controlCh);
+      return onFailed(client, job, msg.body, config);
     case "dead":
-      return onDead(client, job, msg.body, controlCh);
+      return onDead(client, job, msg.body);
     default:
-      return { relaySignal: false, jobStopped: false, events: [] };
+      return { jobStopped: false, events: [] };
   }
 }
 

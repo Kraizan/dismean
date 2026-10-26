@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Full local verification orchestrator. See docs/code-map.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export DATA_DIR="${DATA_DIR:-$ROOT/data}"

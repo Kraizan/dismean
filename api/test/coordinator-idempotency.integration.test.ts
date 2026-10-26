@@ -1,4 +1,3 @@
-/** Duplicate/out-of-order completions. See docs/code-map.md · ITD-009. */
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";

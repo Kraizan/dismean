@@ -1,4 +1,3 @@
-/** Apply ordered SQL migrations at startup. See docs/code-map.md · LLD §2. */
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
