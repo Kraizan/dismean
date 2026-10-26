@@ -189,6 +189,8 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 **Status:** Accepted · **Date:** 2026-10-25
 - **Decision:** keep one transaction per message. A benchmark (F = 20k, C = 10, W = 8) reports completions per second and how long workers wait on the coordinator. Batch only if it shows a bottleneck.
 - **Why:** with small C, workers might outpace about 45k sequential transactions. That's unproven until measured.
+- **Measured (2026-10-26, MacBook Pro, local docker Postgres + RabbitMQ 4, `DATA_DIR` on local disk, W = 8 via `PUT /fleet`):** `BENCHMARK_F=20000 ./scripts/benchmark-job.py` — wall **99.3 s**; **9,000** task completions (4,000 GENERATE + 5,000 MERGE) → **~91 completions/s** end-to-end; `timings_ms`: generation **27.7 s**, reduction **71.6 s**. Workers stayed busy through reduction; no sign the single-threaded coordinator was the dominant bottleneck at this C (throughput is well below the ~200–1,000/s local coordinator band in the HLD). Fair-share relay window query did not need batching at this scale.
+- **Consequences:** defer coordinator batching and sharding (future-work §3); re-run if F, concurrent job count, or C changes materially.
 
 ### ITD-028: Only the API builds file paths
 **Status:** Accepted · **Date:** 2026-10-25

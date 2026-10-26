@@ -172,7 +172,7 @@ Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` is the
 | Restart RabbitMQ | API and workers recover and run a new job | `scripts/e2e-broker-restart.py` |
 | Supervisor scale-down order | Idle workers drained first | `worker/tests/test_supervisor.py` |
 | UI logic | Estimates, validation, event and status filters | `ui/src/format.test.ts` |
-| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `RUN_BENCHMARK=1 BENCHMARK_F=20000 scripts/benchmark-job.py` |
+| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `BENCHMARK_F=20000 scripts/benchmark-job.py` — **~91 completions/s**, 99.3 s wall; no batching (2026-10-26) |
 | API validation, cancel, and fleet W scaling | HTTP errors, stop broadcast, and dynamic W (`GET/PUT /fleet`) | `scripts/e2e-api-errors.py`, `scripts/e2e-fleet.py` |
 | Several job sizes end-to-end | Generation/reduction edge sizes | `scripts/e2e-matrix.py` |
 | Worker task IO | Generate/merge atomic writes | `worker/tests/test_tasks.py` |

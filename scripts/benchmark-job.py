@@ -25,6 +25,15 @@ def get(path: str) -> dict:
         return json.loads(resp.read().decode())
 
 
+def count_done_tasks(tasks: dict) -> int:
+    total = 0
+    for kind in ("GENERATE", "MERGE"):
+        by_status = tasks.get(kind) or {}
+        if isinstance(by_status, dict):
+            total += int(by_status.get("DONE", 0))
+    return total
+
+
 def main() -> int:
     print(f"benchmark f={F} c={C} (workers W={W} assumed running)")
     t0 = time.perf_counter()
@@ -34,10 +43,15 @@ def main() -> int:
         j = get(f"/jobs/{job_id}")
         if j["status"] == "COMPLETED":
             elapsed = time.perf_counter() - t0
-            tasks = j.get("tasks") or {}
-            done = int(tasks.get("done", 0))
+            done = count_done_tasks(j.get("tasks") or {})
             cps = done / elapsed if elapsed > 0 else 0
-            print(f"completed in {elapsed:.1f}s tasks_done={done} ~{cps:.1f} completions/s")
+            timings = j.get("timings_ms") or {}
+            gen_s = timings.get("generation", 0) / 1000
+            red_s = timings.get("reduction", 0) / 1000
+            print(
+                f"completed in {elapsed:.1f}s tasks_done={done} ~{cps:.1f} completions/s "
+                f"(generation {gen_s:.1f}s, reduction {red_s:.1f}s)"
+            )
             return 0
         if j["status"] in ("FAILED", "CANCELLED"):
             print(json.dumps(j, indent=2), file=sys.stderr)

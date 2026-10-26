@@ -104,7 +104,7 @@ The API and workers must use the same absolute `DATA_DIR`.
 |---|---|---|
 | Coordinator, one transaction per completion (about 200–1,000/s locally) | Very short tasks (small C) | Benchmark first (ITD-027), then batch, then shard |
 | Disk: F·C of inputs + (M−1)·8C of partials per job | Large jobs, kept until cleanup | Retention window; object storage |
-| Dispatch query: one window over all `CREATED` tasks per relay tick | Many very large jobs at once (about 20k rows per F = 100k job) | Measure with ITD-027; then rank per job with a lateral `LIMIT` |
+| Dispatch query: one window over all `CREATED` tasks per relay tick | Many very large jobs at once (about 20k rows per F = 100k job) | ITD-027 at F = 20k showed no relay pain (~91 completions/s); if many concurrent huge jobs, rank per job with a lateral `LIMIT` |
 | Round-robin is per job, not per task cost | A job with huge C gets the same number of slots as one with tiny C | Weight rounds by C if it matters |
 
 ## 9. Security
