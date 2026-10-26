@@ -2,6 +2,7 @@ import type pg from "pg";
 import { pushEvent } from "../events.js";
 import type { JobRow } from "../db/types.js";
 import * as paths from "../paths.js";
+import type { PendingEvent } from "./failJob.js";
 
 export async function openMerges(
   client: pg.PoolClient,
@@ -112,6 +113,7 @@ export async function createLeafMerges(
 export async function barrier(
   client: pg.PoolClient,
   job: JobRow,
+  events?: PendingEvent[],
 ): Promise<boolean> {
   await client.query(
     `UPDATE jobs SET status = 'REDUCING', generation_completed_at = now() WHERE id = $1`,
@@ -129,7 +131,12 @@ export async function barrier(
 
   await createLeafMerges(client, job.id, job.f);
   const scheduled = await schedule(client, job);
-  pushEvent({ type: "generation_completed", job_id: job.id });
+  const ev: PendingEvent = { type: "generation_completed", job_id: job.id };
+  if (events) {
+    events.push(ev);
+  } else {
+    pushEvent(ev);
+  }
   return scheduled;
 }
 

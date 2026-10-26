@@ -15,6 +15,13 @@ export function healthRouter(pool: pg.Pool, amqp: ChannelModel | null): Router {
     }
     if (!amqp) {
       amqpStatus = "error";
+    } else {
+      try {
+        const ch = await amqp.createChannel();
+        await ch.close();
+      } catch {
+        amqpStatus = "error";
+      }
     }
     const ok = db === "ok" && amqpStatus === "ok";
     res.status(ok ? 200 : 503).json({ db, amqp: amqpStatus });

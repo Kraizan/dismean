@@ -10,7 +10,7 @@ import type {
   TaskMessage,
 } from "../messages.js";
 import * as paths from "../paths.js";
-import { failJob } from "./failJob.js";
+import { failJob, type PendingEvent } from "./failJob.js";
 import { barrier, schedule } from "./scheduler.js";
 
 export interface HandlerResult {
@@ -18,6 +18,7 @@ export interface HandlerResult {
   jobStopped: boolean;
   jobId?: string;
   stopStatus?: "FAILED" | "CANCELLED";
+  events: PendingEvent[];
 }
 
 export async function onCompleted(
@@ -25,7 +26,11 @@ export async function onCompleted(
   job: JobRow,
   msg: TaskCompleted,
 ): Promise<HandlerResult> {
-  const result: HandlerResult = { relaySignal: false, jobStopped: false };
+  const result: HandlerResult = {
+    relaySignal: false,
+    jobStopped: false,
+    events: [],
+  };
 
   const { rows } = await client.query<TaskRow>(
     `UPDATE tasks SET status = 'DONE', completed_at = now(),
@@ -36,7 +41,7 @@ export async function onCompleted(
   );
   const task = rows[0];
   if (!task) {
-    pushEvent({
+    result.events.push({
       type: "duplicate_completion",
       job_id: job.id,
       task_id: msg.task_id,
@@ -53,7 +58,7 @@ export async function onCompleted(
       [job.id, task.file_count ?? 0],
     );
     if (updated && updated.generated_files === job.f) {
-      await barrier(client, job);
+      await barrier(client, job, result.events);
       result.relaySignal = true;
     }
   } else {
@@ -66,7 +71,7 @@ export async function onCompleted(
         `UPDATE jobs SET status = 'COMPLETED', finished_at = now() WHERE id = $1`,
         [job.id],
       );
-      pushEvent({ type: "job_completed", job_id: job.id });
+      result.events.push({ type: "job_completed", job_id: job.id });
     } else {
       const relPath = paths.partialPath(job.id, task.id);
       await client.query(
@@ -85,9 +90,13 @@ export async function onFailed(
   job: JobRow,
   msg: TaskFailed,
   config: Config,
-  controlCh: Channel | null,
+  _controlCh: Channel | null,
 ): Promise<HandlerResult> {
-  const result: HandlerResult = { relaySignal: false, jobStopped: false };
+  const result: HandlerResult = {
+    relaySignal: false,
+    jobStopped: false,
+    events: [],
+  };
 
   const { rows } = await client.query<TaskRow>(
     `SELECT * FROM tasks WHERE id = $1 AND attempt = $2
@@ -96,7 +105,7 @@ export async function onFailed(
   );
   const task = rows[0];
   if (!task) {
-    pushEvent({
+    result.events.push({
       type: "stale_failure",
       job_id: job.id,
       task_id: msg.task_id,
@@ -110,7 +119,7 @@ export async function onFailed(
        WHERE id = $1`,
       [task.id, msg.error.message],
     );
-    pushEvent({
+    result.events.push({
       type: "task_retry",
       job_id: job.id,
       task_id: task.id,
@@ -123,7 +132,7 @@ export async function onFailed(
       [task.id, msg.error.message],
     );
     const reason = `task ${task.id} failed ${config.MAX_ATTEMPTS} times: ${msg.error.message}`;
-    await failJob(client, job, reason, controlCh);
+    await failJob(client, job, reason, result.events);
     result.jobStopped = true;
     result.jobId = job.id;
     result.stopStatus = "FAILED";
@@ -135,9 +144,13 @@ export async function onDead(
   client: pg.PoolClient,
   job: JobRow,
   msg: TaskMessage,
-  controlCh: Channel | null,
+  _controlCh: Channel | null,
 ): Promise<HandlerResult> {
-  const result: HandlerResult = { relaySignal: false, jobStopped: false };
+  const result: HandlerResult = {
+    relaySignal: false,
+    jobStopped: false,
+    events: [],
+  };
 
   const { rows } = await client.query<TaskRow>(
     `SELECT * FROM tasks WHERE id = $1 AND status IN ('CREATED', 'PUBLISHED')`,
@@ -146,7 +159,7 @@ export async function onDead(
   const task = rows[0];
   if (!task) return result;
 
-  pushEvent({
+  result.events.push({
     type: "task_dead_lettered",
     job_id: job.id,
     task_id: task.id,
@@ -156,7 +169,7 @@ export async function onDead(
     [task.id],
   );
   const reason = `task ${task.id} exceeded delivery limit (worker crash loop)`;
-  await failJob(client, job, reason, controlCh);
+  await failJob(client, job, reason, result.events);
   result.jobStopped = true;
   result.jobId = job.id;
   result.stopStatus = "FAILED";
@@ -178,6 +191,12 @@ export async function routeMessage(
     case "dead":
       return onDead(client, job, msg.body, controlCh);
     default:
-      return { relaySignal: false, jobStopped: false };
+      return { relaySignal: false, jobStopped: false, events: [] };
+  }
+}
+
+export function flushEvents(events: PendingEvent[]): void {
+  for (const ev of events) {
+    pushEvent(ev);
   }
 }

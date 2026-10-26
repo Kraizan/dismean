@@ -9,6 +9,23 @@ interface QueueStats {
   tasks_dead: number;
 }
 
+function parseMgmtUrl(rawUrl: string): { baseUrl: string; authHeader: string | null } {
+  try {
+    const parsed = new URL(rawUrl);
+    let authHeader: string | null = null;
+    if (parsed.username || parsed.password) {
+      const user = decodeURIComponent(parsed.username);
+      const pass = decodeURIComponent(parsed.password);
+      authHeader = `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
+      parsed.username = "";
+      parsed.password = "";
+    }
+    return { baseUrl: parsed.toString().replace(/\/$/, ""), authHeader };
+  } catch {
+    return { baseUrl: rawUrl.replace(/\/$/, ""), authHeader: null };
+  }
+}
+
 async function fetchQueueStats(config: Config): Promise<QueueStats> {
   const names = ["dm.tasks", "dm.coordinator", "dm.tasks.dead"];
   const out: QueueStats = {
@@ -18,11 +35,16 @@ async function fetchQueueStats(config: Config): Promise<QueueStats> {
     tasks_dead: 0,
   };
   try {
+    const { baseUrl, authHeader } = parseMgmtUrl(config.RABBITMQ_MGMT_URL);
+    const headers: Record<string, string> = {};
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
     for (const name of names) {
       const encoded = encodeURIComponent(name);
-      const res = await fetch(
-        `${config.RABBITMQ_MGMT_URL}/api/queues/%2F/${encoded}`,
-      );
+      const res = await fetch(`${baseUrl}/api/queues/%2F/${encoded}`, {
+        headers,
+      });
       if (!res.ok) continue;
       const data = (await res.json()) as {
         messages_ready?: number;
@@ -53,7 +75,7 @@ function reductionProgress(
   if (status === "COMPLETED") return 1;
   if (status === "GENERATING") return 0;
   if (f <= 1) return 1;
-  return 1 - (live - 1) / (f - 1);
+  return Math.max(0, Math.min(1, 1 - (live - 1) / (f - 1)));
 }
 
 export async function buildStatsSnapshot(
@@ -98,7 +120,8 @@ export async function buildStatsSnapshot(
     generated_files: number;
   }>(
     `SELECT id, f, c, status::text, generated_files FROM jobs
-     WHERE status IN ('GENERATING', 'REDUCING')`,
+     WHERE status IN ('GENERATING', 'REDUCING')
+     ORDER BY created_at DESC`,
   );
 
   const active_jobs: Array<Record<string, unknown>> = [];
@@ -111,7 +134,7 @@ export async function buildStatsSnapshot(
       [j.id],
     );
     const doneCount = Number(doneRows[0]?.count ?? 0);
-    const busy = isJobBusyOnWorkers(j.id);
+    const busy = isJobBusyOnWorkers(j.id, config);
     const waiting =
       j.status === "GENERATING" && doneCount === 0 && !busy;
     if (waiting) waitingCount += 1;
@@ -123,7 +146,9 @@ export async function buildStatsSnapshot(
          WHERE job_id = $1 AND state IN ('READY', 'RESERVED')`,
         [j.id],
       );
-      live = Number(liveRows[0]?.sum ?? 0);
+      if (liveRows[0]?.sum !== null && liveRows[0]?.sum !== undefined) {
+        live = Number(liveRows[0].sum);
+      }
     }
 
     const progress = {
@@ -175,12 +200,15 @@ export async function buildStatsSnapshot(
       dead: workers.dead,
       list: workers.list.map((w) => ({
         id: w.id,
-        state: w.state,
+        state: w.dead ? "DEAD" : w.state,
         task_id: w.task_id,
         job_id: w.job_id,
         task_kind: w.task_kind,
         tasks_done: w.tasks_done,
         last_heartbeat_at: w.last_heartbeat_at,
+        hostname: w.hostname,
+        pid: w.pid,
+        dead: w.dead,
       })),
     },
     queue,

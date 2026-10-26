@@ -87,15 +87,24 @@ export async function publishTask(
   ch: ConfirmChannel,
   message: TaskMessage,
 ): Promise<void> {
-  const body = Buffer.from(JSON.stringify(message));
-  const ok = ch.publish(EXCHANGE_TASKS, "task", body, {
-    contentType: "application/json",
-    deliveryMode: 2,
-    messageId: `${message.task_id}:${message.attempt}`,
-    priority: taskPriority(message.kind),
-  });
-  if (!ok) {
-    throw new Error("publish buffer full");
+  await publishTaskBatch(ch, [message]);
+}
+
+export async function publishTaskBatch(
+  ch: ConfirmChannel,
+  messages: TaskMessage[],
+): Promise<void> {
+  for (const message of messages) {
+    const body = Buffer.from(JSON.stringify(message));
+    const ok = ch.publish(EXCHANGE_TASKS, "task", body, {
+      contentType: "application/json",
+      deliveryMode: 2,
+      messageId: `${message.task_id}:${message.attempt}`,
+      priority: taskPriority(message.kind),
+    });
+    if (!ok) {
+      await new Promise<void>((resolve) => ch.once("drain", resolve));
+    }
   }
   await ch.waitForConfirms();
 }

@@ -262,14 +262,19 @@ def _on_task(
     except ValueError as exc:
         LOG.error("invalid task message: %s", exc)
         task_id = raw.get("task_id") if isinstance(raw, dict) else None
-        if isinstance(task_id, str) and isinstance(raw, dict):
+        job_id = raw.get("job_id") if isinstance(raw, dict) else None
+        raw_attempt = raw.get("attempt", 1) if isinstance(raw, dict) else 1
+        attempt = raw_attempt if isinstance(raw_attempt, int) and not isinstance(raw_attempt, bool) and raw_attempt >= 1 else 1
+        raw_kind = raw.get("kind") if isinstance(raw, dict) else None
+        kind = raw_kind if raw_kind in ("GENERATE", "MERGE") else "GENERATE"
+        if isinstance(task_id, str) and task_id and isinstance(job_id, str) and job_id:
             try:
                 failed = _task_failed_body(
                     rt,
                     task_id,
-                    str(raw.get("job_id", "")),
-                    int(raw.get("attempt", 1)),
-                    str(raw.get("kind", "GENERATE")),
+                    job_id,
+                    attempt,
+                    kind,
                     exc,
                 )
                 _publish_json(ch, EXCHANGE_EVENTS, RK_FAILED, failed)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP API validation and cancel flow."""
+"""HTTP API validation, non-UUID 404s, cancel, and delete flow."""
 import json
 import os
 import sys
@@ -18,12 +18,14 @@ def request(method: str, path: str, body: dict | None = None, expect_status: int
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             status = resp.status
-            payload = json.loads(resp.read().decode()) if resp.length != 0 else {}
+            raw = resp.read()
+            payload = json.loads(raw.decode()) if raw else {}
     except urllib.error.HTTPError as e:
         status = e.code
-        payload = json.loads(e.read().decode()) if e.fp else {}
+        raw = e.read() if e.fp else b""
+        payload = json.loads(raw.decode()) if raw else {}
         if expect_status is not None and status != expect_status:
-            raise
+            raise AssertionError(f"expected {expect_status} got {status}: {payload}") from e
         return status, payload
     if expect_status is not None and status != expect_status:
         raise AssertionError(f"expected {expect_status} got {status}")
@@ -31,25 +33,38 @@ def request(method: str, path: str, body: dict | None = None, expect_status: int
 
 
 def main() -> int:
-    print("==> api errors")
-    status, _ = request("POST", "/jobs", {"f": 1, "c": 5}, expect_status=400)
-    assert status == 400
-    status, _ = request("POST", "/jobs", {"f": 10, "c": 1}, expect_status=400)
-    assert status == 400
+    print("==> api errors & 404s")
+    request("POST", "/jobs", {"f": 1, "c": 5}, expect_status=400)
+    request("POST", "/jobs", {"f": 10, "c": 1}, expect_status=400)
+    request("GET", "/jobs/not-a-uuid", expect_status=404)
+    request("POST", "/jobs/not-a-uuid/cancel", expect_status=404)
+    request("DELETE", "/jobs/not-a-uuid", expect_status=404)
+    request("GET", "/jobs/00000000-0000-4000-8000-000000000000", expect_status=404)
 
-    print("==> cancel flow")
-    _, job = request("POST", "/jobs", {"f": 500, "c": 10})
+    print("==> cancel + delete flow")
+    _, job = request("POST", "/jobs", {"f": 500, "c": 10}, expect_status=201)
     job_id = job["id"]
-    request("POST", f"/jobs/{job_id}/cancel")
+    request("POST", f"/jobs/{job_id}/cancel", expect_status=202)
     j = {"status": ""}
     for _ in range(30):
-        _, j = request("GET", f"/jobs/{job_id}")
+        _, j = request("GET", f"/jobs/{job_id}", expect_status=200)
         if j["status"] in ("CANCELLED", "FAILED", "COMPLETED"):
             break
         time.sleep(0.2)
     if j["status"] != "CANCELLED":
-        print("expected cancelled/failed got", j["status"], file=sys.stderr)
+        print("expected CANCELLED got", j["status"], file=sys.stderr)
         return 1
+
+    # Cancelling again returns 409
+    request("POST", f"/jobs/{job_id}/cancel", expect_status=409)
+
+    # Deleting cancelled job returns 204, then 404 on GET
+    request("DELETE", f"/jobs/{job_id}", expect_status=204)
+    request("GET", f"/jobs/{job_id}", expect_status=404)
+
+    print("==> cleanup endpoint")
+    request("POST", "/cleanup", expect_status=200)
+
     print("==> e2e-api-errors passed")
     return 0
 

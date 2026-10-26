@@ -10,9 +10,10 @@ import {
   QUEUE_COORDINATOR,
   QUEUE_DEAD,
   passiveDeclareQueues,
+  publishJobStopped,
 } from "../mq/connection.js";
-import { failJob } from "./failJob.js";
-import { routeMessage } from "./handlers.js";
+import { failJob, type PendingEvent } from "./failJob.js";
+import { flushEvents, routeMessage } from "./handlers.js";
 
 export const RELAY_SIGNAL = "relay";
 
@@ -71,13 +72,13 @@ async function processMessage(
     );
     const job = rows[0];
     if (!job || (job.status !== "GENERATING" && job.status !== "REDUCING")) {
+      await client.query("COMMIT");
+      ch.ack(msg);
       pushEvent({
         type: "ignored_inactive_job",
         job_id: jobId,
         task_id: "task_id" in parsed.body ? parsed.body.task_id : undefined,
       });
-      await client.query("COMMIT");
-      ch.ack(msg);
       return;
     }
 
@@ -91,11 +92,24 @@ async function processMessage(
     await client.query("COMMIT");
     ch.ack(msg);
 
+    flushEvents(handlerResult.events);
     if (handlerResult.relaySignal) {
       relayEmitter.emit(RELAY_SIGNAL);
     }
+    if (handlerResult.jobStopped && handlerResult.jobId && handlerResult.stopStatus) {
+      try {
+        await publishJobStopped(controlCh, {
+          schema_version: 1,
+          type: "job.stopped",
+          job_id: handlerResult.jobId,
+          status: handlerResult.stopStatus,
+        });
+      } catch {
+        // best-effort broadcast (ITD-013)
+      }
+    }
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     if (isDbAvailabilityError(err)) {
       client.release();
       released = true;
@@ -127,18 +141,32 @@ async function processMessage(
         [jobId],
       );
       const job = rows[0];
+      const errEvents: PendingEvent[] = [];
       if (job) {
         await failJob(
           client,
           job,
           `internal error: ${err instanceof Error ? err.message : String(err)}`,
-          controlCh,
+          errEvents,
         );
       }
       await client.query("COMMIT");
       ch.ack(msg);
+      flushEvents(errEvents);
+      if (job) {
+        try {
+          await publishJobStopped(controlCh, {
+            schema_version: 1,
+            type: "job.stopped",
+            job_id: job.id,
+            status: "FAILED",
+          });
+        } catch {
+          // best-effort broadcast (ITD-013)
+        }
+      }
     } catch (inner) {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK").catch(() => {});
       throw inner;
     }
   } finally {

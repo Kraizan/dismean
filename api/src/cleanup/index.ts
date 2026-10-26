@@ -92,12 +92,11 @@ export async function runCleanup(pool: pg.Pool, config: Config): Promise<{
     jobsCleaned += 1;
   }
 
-  if (jobsCleaned > 0 || filesDeleted > 0) {
-    pushEvent({
-      type: "cleanup_ran",
-      data: { jobs_cleaned: jobsCleaned, files_deleted: filesDeleted, bytes_freed: bytesFreed },
-    });
-  }
+  pushEvent({
+    type: "cleanup_ran",
+    message: `cleaned ${jobsCleaned} jobs, ${filesDeleted} files (${bytesFreed} B)`,
+    data: { jobs_cleaned: jobsCleaned, files_deleted: filesDeleted, bytes_freed: bytesFreed },
+  });
 
   return {
     jobs_cleaned: jobsCleaned,

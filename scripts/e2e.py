@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """E2E test without curl (works when shell curl is redirected)."""
+import io
 import json
 import os
-import subprocess
 import sys
 import time
 import urllib.error
@@ -26,6 +26,11 @@ def http(method: str, path: str, body: dict | None = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
+
+
+def http_bytes(path: str) -> bytes:
+    with urllib.request.urlopen(f"{API_URL}{path}", timeout=30) as resp:
+        return resp.read()
 
 
 def main() -> None:
@@ -63,10 +68,31 @@ def main() -> None:
         sums += arr.astype(np.int64)
     expected = sums / f
     result = np.load(DATA_DIR / f"jobs/{job_id}/result.npy")
-    if not np.allclose(result, expected):
+    if not np.array_equal(result, expected):
         print("mismatch", result[:5], expected[:5])
         sys.exit(1)
-    print("ok mean matches seeded inputs")
+    print("ok mean matches seeded inputs bit-for-bit")
+
+    print("==> verify HTTP downloads (result.csv, result.npy, inputs/0.csv)")
+    csv_text = http_bytes(f"/jobs/{job_id}/result.csv").decode().strip()
+    csv_vals = [float(x) for x in csv_text.split(",")]
+    if len(csv_vals) != c or not np.allclose(csv_vals, expected, atol=1e-7):
+        print("result.csv mismatch", csv_vals, expected)
+        sys.exit(1)
+
+    npy_bytes = http_bytes(f"/jobs/{job_id}/result.npy")
+    dl_npy = np.load(io.BytesIO(npy_bytes))
+    if not np.array_equal(dl_npy, expected):
+        print("result.npy HTTP mismatch")
+        sys.exit(1)
+
+    inp0_csv = http_bytes(f"/jobs/{job_id}/inputs/0.csv").decode().strip()
+    inp0_vals = [int(x) for x in inp0_csv.split(",")]
+    inp0_disk = np.load(DATA_DIR / f"jobs/{job_id}/inputs/000000.npy").tolist()
+    if inp0_vals != inp0_disk:
+        print("inputs/0.csv mismatch", inp0_vals, inp0_disk)
+        sys.exit(1)
+
     print("==> e2e passed")
 
 

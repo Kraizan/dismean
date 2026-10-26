@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import type { EventEmitter } from "node:events";
 import type { Channel } from "amqplib";
@@ -11,8 +12,11 @@ import { publishJobStopped } from "../mq/connection.js";
 import { inputPath, resultPaths } from "../paths.js";
 import { RELAY_SIGNAL } from "../coordinator/index.js";
 import { streamCsvFile } from "../storage/csv.js";
+import { streamNpyAsCsv } from "../storage/npy.js";
 import { deleteJobDir } from "../storage/deleteJobDir.js";
 import crypto from "node:crypto";
+
+const uuidParamSchema = z.string().uuid();
 
 const createBodySchema = z.object({
   f: z.number().int().min(2).max(99_999),
@@ -37,7 +41,7 @@ function mergeTaskEstimate(f: number): number {
   return Math.ceil((f - 1) / 4);
 }
 
-function jobEstimate(f: number, c: number) {
+export function jobEstimate(f: number, c: number) {
   const merge_tasks = mergeTaskEstimate(f);
   return {
     input_bytes: f * c,
@@ -65,27 +69,22 @@ async function taskCounts(pool: pg.Pool, jobId: string) {
   return tasks;
 }
 
-async function jobTimings(pool: pg.Pool, jobId: string) {
-  const { rows } = await pool.query<{
-    kind: string;
-    total_ms: string | null;
-  }>(
-    `SELECT kind::text, sum(duration_ms)::text AS total_ms
-     FROM tasks WHERE job_id = $1 AND status = 'DONE'
-     GROUP BY kind`,
-    [jobId],
-  );
-  let generation: number | null = null;
-  let reduction: number | null = null;
-  for (const row of rows) {
-    const ms = row.total_ms ? Number(row.total_ms) : null;
-    if (row.kind === "GENERATE") generation = ms;
-    if (row.kind === "MERGE") reduction = ms;
-  }
+async function jobTimings(pool: pg.Pool, job: JobRow) {
+  const createdMs = job.created_at.getTime();
+  const genCompletedMs = job.generation_completed_at?.getTime() ?? null;
+  const finishedMs = job.finished_at?.getTime() ?? null;
+
+  const generation =
+    genCompletedMs !== null ? Math.max(0, genCompletedMs - createdMs) : null;
+  const reduction =
+    genCompletedMs !== null &&
+    finishedMs !== null &&
+    job.status === "COMPLETED"
+      ? Math.max(0, finishedMs - genCompletedMs)
+      : null;
   const total =
-    generation !== null && reduction !== null
-      ? generation + reduction
-      : generation ?? reduction;
+    finishedMs !== null ? Math.max(0, finishedMs - createdMs) : null;
+
   return { generation, reduction, total };
 }
 
@@ -100,14 +99,17 @@ async function reductionProgress(
      WHERE job_id = $1 AND state IN ('READY', 'RESERVED')`,
     [job.id],
   );
-  const live = Number(rows[0]?.sum ?? 0);
+  if (rows[0]?.sum === null || rows[0]?.sum === undefined) {
+    return 0;
+  }
+  const live = Number(rows[0].sum);
   if (job.f <= 1) return 1;
-  return 1 - (live - 1) / (job.f - 1);
+  return Math.max(0, Math.min(1, 1 - (live - 1) / (job.f - 1)));
 }
 
 async function formatJob(pool: pg.Pool, job: JobRow) {
   const tasks = await taskCounts(pool, job.id);
-  const timings_ms = await jobTimings(pool, job.id);
+  const timings_ms = await jobTimings(pool, job);
   const estimate = jobEstimate(job.f, job.c);
   const progress = {
     generation: job.generated_files / job.f,
@@ -124,6 +126,7 @@ async function formatJob(pool: pg.Pool, job: JobRow) {
     created_at: job.created_at.toISOString(),
     generation_completed_at: job.generation_completed_at?.toISOString() ?? null,
     finished_at: job.finished_at?.toISOString() ?? null,
+    partials_cleaned_at: job.partials_cleaned_at?.toISOString() ?? null,
     progress,
     tasks,
     timings_ms,
@@ -211,10 +214,15 @@ export function jobsRouter(
   });
 
   router.get("/jobs/:id", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     try {
       const { rows } = await pool.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
@@ -228,12 +236,17 @@ export function jobsRouter(
   });
 
   router.post("/jobs/:id/cancel", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const { rows } = await client.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1 FOR UPDATE`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
@@ -257,12 +270,16 @@ export function jobsRouter(
       );
       await client.query("COMMIT");
 
-      await publishJobStopped(controlCh, {
-        schema_version: 1,
-        type: "job.stopped",
-        job_id: job.id,
-        status: "CANCELLED",
-      });
+      try {
+        await publishJobStopped(controlCh, {
+          schema_version: 1,
+          type: "job.stopped",
+          job_id: job.id,
+          status: "CANCELLED",
+        });
+      } catch {
+        // best-effort broadcast (ITD-013)
+      }
       pushEvent({ type: "job_cancelled", job_id: job.id });
 
       const { rows: updated } = await pool.query<JobRow>(
@@ -279,10 +296,15 @@ export function jobsRouter(
   });
 
   router.delete("/jobs/:id", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     try {
       const { rows } = await pool.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
@@ -303,10 +325,15 @@ export function jobsRouter(
   });
 
   router.get("/jobs/:id/result.csv", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     try {
       const { rows } = await pool.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
@@ -319,6 +346,10 @@ export function jobsRouter(
       }
       const rel = resultPaths(job.id).csv;
       const abs = path.join(config.DATA_DIR, rel);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="job-${job.id.slice(0, 8)}-result.csv"`,
+      );
       await streamCsvFile(abs, res);
     } catch (err) {
       next(err);
@@ -326,10 +357,15 @@ export function jobsRouter(
   });
 
   router.get("/jobs/:id/result.npy", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     try {
       const { rows } = await pool.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
@@ -342,6 +378,12 @@ export function jobsRouter(
       }
       const rel = resultPaths(job.id).npy;
       const abs = path.join(config.DATA_DIR, rel);
+      await access(abs);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="job-${job.id.slice(0, 8)}-result.npy"`,
+      );
       res.sendFile(abs);
     } catch (err) {
       next(err);
@@ -349,6 +391,11 @@ export function jobsRouter(
   });
 
   router.get("/jobs/:id/inputs/:index.csv", async (req, res, next) => {
+    const idCheck = uuidParamSchema.safeParse(req.params.id);
+    if (!idCheck.success) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
     try {
       const index = Number(req.params.index);
       if (!Number.isInteger(index) || index < 0) {
@@ -357,21 +404,30 @@ export function jobsRouter(
       }
       const { rows } = await pool.query<JobRow>(
         `SELECT * FROM jobs WHERE id = $1`,
-        [req.params.id],
+        [idCheck.data],
       );
       const job = rows[0];
       if (!job) {
         res.status(404).json({ error: "not found" });
         return;
       }
-      if (job.generated_files <= index) {
-        res.status(404).json({ error: "input not generated" });
+      if (index >= job.f) {
+        res.status(404).json({ error: "input index out of range" });
         return;
       }
       const npyRel = inputPath(job.id, index);
-      const csvRel = npyRel.replace(/\.npy$/, ".csv");
-      const abs = path.join(config.DATA_DIR, csvRel);
-      await streamCsvFile(abs, res);
+      const abs = path.join(config.DATA_DIR, npyRel);
+      try {
+        await access(abs);
+      } catch {
+        res.status(404).json({ error: "input not generated" });
+        return;
+      }
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="job-${job.id.slice(0, 8)}-input-${String(index).padStart(6, "0")}.csv"`,
+      );
+      await streamNpyAsCsv(abs, res);
     } catch (err) {
       next(err);
     }

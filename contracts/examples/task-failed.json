@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "task_id": "33333333-3333-4333-8333-333333333333",
-  "job_id": "22222222-2222-4222-8222-222222222222",
-  "attempt": 1,
-  "kind": "MERGE",
-  "worker_id": "host-2-41233",
-  "error": { "type": "FileNotFoundError", "message": "missing input" }
-}

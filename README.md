@@ -24,8 +24,8 @@ cd worker && python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python -m dismean_worker.supervisor
 
-# UI (optional)
-cd ui && npm install && npm run dev
+# UI (ops dashboard)
+cd ui && npm install && npm run dev   # http://localhost:5173 → proxies /api to :3000
 ```
 
 ## Tests

@@ -18,6 +18,7 @@ class Slot:
     index: int
     process: subprocess.Popen[bytes] | None = None
     backoff_s: float = 1.0
+    next_spawn_at: float = 0.0
 
 
 @dataclass
@@ -39,6 +40,7 @@ class Supervisor:
         LOG.info("spawned worker index %s pid %s", slot.index, slot.process.pid)
 
     def _reap(self) -> None:
+        now = time.monotonic()
         for slot in self.slots:
             proc = slot.process
             if proc is None:
@@ -51,15 +53,20 @@ class Supervisor:
             if self.shutting_down:
                 continue
             if code != 0:
-                time.sleep(slot.backoff_s)
+                slot.next_spawn_at = now + slot.backoff_s
                 slot.backoff_s = min(slot.backoff_s * 2, 30.0)
             else:
                 slot.backoff_s = 1.0
-            self._spawn(slot)
+                slot.next_spawn_at = now
 
     def _ensure_running(self) -> None:
+        now = time.monotonic()
         for slot in self.slots:
-            if slot.process is None and not self.shutting_down:
+            if (
+                slot.process is None
+                and not self.shutting_down
+                and now >= slot.next_spawn_at
+            ):
                 self._spawn(slot)
 
     def _forward_sigterm(self) -> None:
@@ -93,7 +100,7 @@ class Supervisor:
         while not self.shutting_down:
             self._reap()
             self._ensure_running()
-            time.sleep(1.0)
+            time.sleep(0.5)
 
         self._wait_drain()
 

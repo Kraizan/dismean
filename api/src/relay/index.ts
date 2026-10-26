@@ -6,7 +6,7 @@ import type { TaskRow } from "../db/types.js";
 import type { TaskMessage } from "../messages.js";
 import * as paths from "../paths.js";
 import { RELAY_SIGNAL } from "../coordinator/index.js";
-import { createConfirmChannel, publishTask } from "../mq/connection.js";
+import { createConfirmChannel, publishTaskBatch } from "../mq/connection.js";
 
 interface ItemInput {
   id: string;
@@ -18,6 +18,7 @@ async function buildTaskMessage(
   client: pg.PoolClient,
   row: TaskRow,
   c: number,
+  seed: number,
 ): Promise<TaskMessage> {
   if (row.kind === "GENERATE") {
     const fileStart = row.file_start ?? 0;
@@ -29,10 +30,6 @@ async function buildTaskMessage(
       indices.push(idx);
       output_paths.push(paths.inputPath(row.job_id, idx));
     }
-    const { rows: seeds } = await client.query<{ seed: string }>(
-      `SELECT seed::text FROM jobs WHERE id = $1`,
-      [row.job_id],
-    );
     return {
       schema_version: 1,
       task_id: row.id,
@@ -41,7 +38,7 @@ async function buildTaskMessage(
       kind: "GENERATE",
       c,
       generate: {
-        seed: Number(seeds[0]?.seed ?? 0),
+        seed,
         file_indices: indices,
         output_paths,
       },
@@ -105,8 +102,8 @@ export async function relayOnce(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query<TaskRow & { c: number }>(
-      `SELECT t.*, j.c FROM tasks t
+    const { rows } = await client.query<TaskRow & { c: number; seed: string }>(
+      `SELECT t.*, j.c, j.seed::text AS seed FROM tasks t
        JOIN jobs j ON j.id = t.job_id
        WHERE t.status = 'CREATED'
        ORDER BY t.created_at
@@ -122,12 +119,12 @@ export async function relayOnce(
 
     const messages: TaskMessage[] = [];
     for (const row of rows) {
-      messages.push(await buildTaskMessage(client, row, row.c));
+      messages.push(
+        await buildTaskMessage(client, row, row.c, Number(row.seed ?? 0)),
+      );
     }
 
-    for (const msg of messages) {
-      await publishTask(confirmCh, msg);
-    }
+    await publishTaskBatch(confirmCh, messages);
 
     const ids = rows.map((r) => r.id);
     await client.query(
@@ -139,7 +136,7 @@ export async function relayOnce(
     await client.query("COMMIT");
     return rows.length;
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
     client.release();
@@ -155,12 +152,23 @@ export async function startRelay(
   let stopped = false;
   const confirmCh = await createConfirmChannel(conn);
   let ticking = false;
+  let pendingSignal = false;
 
   const tick = async (): Promise<void> => {
-    if (stopped || ticking) return;
+    if (stopped) return;
+    if (ticking) {
+      pendingSignal = true;
+      return;
+    }
     ticking = true;
     try {
-      await relayOnce(pool, confirmCh, config);
+      do {
+        pendingSignal = false;
+        const count = await relayOnce(pool, confirmCh, config);
+        if (count === config.RELAY_BATCH) {
+          pendingSignal = true;
+        }
+      } while (pendingSignal && !stopped);
     } catch (err) {
       console.error("relay error", err);
     } finally {

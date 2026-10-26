@@ -40,7 +40,7 @@ export function getWorkerMap(): Map<string, WorkerEntry> {
 export async function startHeartbeatConsumer(
   conn: ChannelModel,
   config: Config,
-): Promise<Channel> {
+): Promise<{ channel: Channel; stop: () => void }> {
   const ch = await conn.createChannel();
   await ch.checkQueue(QUEUE_HEARTBEATS);
   await ch.consume(
@@ -52,6 +52,11 @@ export async function startHeartbeatConsumer(
         const parsed = workerHeartbeatSchema.safeParse(raw);
         if (!parsed.success) return;
         const hb = parsed.data;
+        if (hb.state === "STOPPED") {
+          workers.delete(hb.worker_id);
+          pushEvent({ type: "worker_stopped", worker_id: hb.worker_id });
+          return;
+        }
         const prev = workers.get(hb.worker_id);
         const isNew = !prev;
         workers.set(hb.worker_id, {
@@ -70,18 +75,17 @@ export async function startHeartbeatConsumer(
         if (isNew) {
           pushEvent({ type: "worker_started", worker_id: hb.worker_id });
         }
-        if (hb.state === "STOPPED") {
-          workers.delete(hb.worker_id);
-          pushEvent({ type: "worker_stopped", worker_id: hb.worker_id });
-        }
       } catch {
         // ignore malformed heartbeats
       }
     },
     { noAck: true },
   );
-  setInterval(() => pruneWorkers(config), 1000);
-  return ch;
+  const timer = setInterval(() => pruneWorkers(config), 1000);
+  return {
+    channel: ch,
+    stop: () => clearInterval(timer),
+  };
 }
 
 function pruneWorkers(config: Config): void {
@@ -90,7 +94,9 @@ function pruneWorkers(config: Config): void {
     const age = now - new Date(w.last_heartbeat_at).getTime();
     if (age > config.WORKER_PRUNE_MS) {
       workers.delete(id);
-      pushEvent({ type: "worker_dead", worker_id: id });
+      if (w.seen) {
+        pushEvent({ type: "worker_dead", worker_id: id });
+      }
     } else if (age > config.WORKER_STALE_MS && w.state !== "STOPPED") {
       if (!w.seen) continue;
       w.seen = false;
@@ -146,9 +152,12 @@ export function buildWorkerStats(config: Config): {
   };
 }
 
-export function isJobBusyOnWorkers(jobId: string): boolean {
+export function isJobBusyOnWorkers(jobId: string, config?: Config): boolean {
+  const now = Date.now();
+  const staleMs = config?.WORKER_STALE_MS ?? 10_000;
   for (const w of workers.values()) {
-    if (w.job_id === jobId && w.state === "BUSY") return true;
+    const age = now - new Date(w.last_heartbeat_at).getTime();
+    if (age <= staleMs && w.job_id === jobId && w.state === "BUSY") return true;
   }
   return false;
 }

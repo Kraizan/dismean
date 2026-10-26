@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   const relayEmitter = new EventEmitter();
   const controlCh = await amqpConn.createChannel();
 
-  await startHeartbeatConsumer(amqpConn, config);
+  const hb = await startHeartbeatConsumer(amqpConn, config);
   const coordChannels = await startCoordinator(
     amqpConn,
     pool,
@@ -71,10 +71,12 @@ async function main(): Promise<void> {
     server.close();
     relay.stop();
     cleanup.stop();
+    hb.stop();
+    await hb.channel.close().catch(() => {});
     for (const ch of coordChannels) {
-      await ch.close();
+      await ch.close().catch(() => {});
     }
-    await controlCh.close();
+    await controlCh.close().catch(() => {});
     await closeAmqp();
     await closePool();
     process.exit(0);
