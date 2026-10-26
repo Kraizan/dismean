@@ -62,6 +62,20 @@ echo "==> verify rabbitmq"
 echo "==> e2e"
 "$PY" "$ROOT/scripts/e2e.py"
 
+echo "==> e2e matrix"
+"$PY" "$ROOT/scripts/e2e-matrix.py"
+
+echo "==> e2e api errors + cancel"
+"$PY" "$ROOT/scripts/e2e-api-errors.py"
+
+echo "==> chaos recovery"
+"$PY" "$ROOT/scripts/chaos-recovery.py"
+
+if [[ "${RUN_BENCHMARK:-0}" == "1" ]]; then
+  echo "==> benchmark"
+  BENCHMARK_F="${BENCHMARK_F:-500}" "$PY" "$ROOT/scripts/benchmark-job.py"
+fi
+
 if [[ "${STARTED_API:-0}" == 1 && -n "${API_PID:-}" ]]; then
   kill "$API_PID" 2>/dev/null || true
 fi

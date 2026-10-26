@@ -159,11 +159,14 @@ Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` counts
 
 | Test | Proves | In repo |
 |---|---|---|
-| Golden: regenerate the seeded files in NumPy and compare with `result.npy` bit for bit | Correctness | `worker/tests/test_golden_mean.py`; e2e NumPy check |
-| Scheduler over random, adversarial and one-slow-worker completion orders | Invariant, task count, exactly one final merge | `api/test/scheduler*.test.ts` (live=f; one final merge for f≤40) |
-| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Idle time stays low with uneven speeds (IPD-009) | Not automated |
-| Every completion delivered twice and out of order | Idempotency | `api/test/coordinator-idempotency.integration.test.ts` (duplicate GENERATE) |
-| Both suites parse `contracts/examples/` | Message contracts agree (ITD-025) | `contract-examples` tests |
+| Golden: regenerate the seeded files in NumPy and compare with `result.npy` bit for bit | Correctness | `worker/tests/test_golden_*.py`; `scripts/e2e.py` |
+| Scheduler over random, adversarial and one-slow-worker completion orders | Invariant, task count, exactly one final merge | `api/test/scheduler*.test.ts` |
+| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Idle time stays low with uneven speeds (IPD-009) | `api/test/reduction-simulation.test.ts` (vs serial baseline) |
+| Every completion delivered twice and out of order | Idempotency | `api/test/coordinator-*-integration.test.ts` |
+| Both suites parse `contracts/examples/` | Message contracts agree (ITD-025) | `contract-examples` + `api/test/messages.test.ts` |
 | Barrier SQL paths equal `paths.inputPath()` | One path source (ITD-028) | `api/test/paths.test.ts` |
-| Kill random workers mid-job | Recovery | Not automated |
-| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `scripts/benchmark-job.py` (manual) |
+| Kill random workers mid-job | Recovery | `scripts/chaos-recovery.py` (in `verify-all.sh`) |
+| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `RUN_BENCHMARK=1 BENCHMARK_F=20000 scripts/benchmark-job.py` |
+| API validation and cancel | HTTP errors and stop broadcast | `scripts/e2e-api-errors.py` |
+| Several job sizes end-to-end | Generation/reduction edge sizes | `scripts/e2e-matrix.py` |
+| Worker task IO | Generate/merge atomic writes | `worker/tests/test_tasks.py` |

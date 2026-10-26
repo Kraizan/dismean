@@ -31,7 +31,8 @@ cd ui && npm install && npm run dev
 ## Tests
 
 ```bash
-./scripts/verify-all.sh   # docker up, unit tests, Rabbit checks, e2e
+./scripts/verify-all.sh   # docker, unit+integration tests, e2e matrix, cancel, chaos
+RUN_BENCHMARK=1 BENCHMARK_F=20000 ./scripts/verify-all.sh   # optional ITD-027 benchmark
 ```
 
 Or manually:
