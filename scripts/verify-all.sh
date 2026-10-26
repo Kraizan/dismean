@@ -51,7 +51,7 @@ if ! pgrep -f "dismean_worker.supervisor" >/dev/null 2>&1; then
 fi
 
 echo "==> api npm test"
-(cd "$ROOT/api" && npm test)
+(cd "$ROOT/api" && DISMEAN_INTEGRATION=1 npm test)
 
 echo "==> worker pytest"
 (cd "$ROOT/worker" && "$PY" -m pytest -q)

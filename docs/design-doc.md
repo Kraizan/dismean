@@ -157,13 +157,13 @@ Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` counts
 
 ## 9. Tests
 
-| Test | Proves |
-|---|---|
-| Golden: regenerate the seeded files in NumPy and compare with `result.npy` bit for bit | Correctness |
-| Scheduler over random, adversarial and one-slow-worker completion orders | Invariant, task count, exactly one final merge |
-| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Idle time stays low with uneven speeds (IPD-009) |
-| Every completion delivered twice and out of order | Idempotency |
-| Both suites parse `contracts/examples/` | Message contracts agree (ITD-025) |
-| Barrier SQL paths equal `paths.inputPath()` | One path source (ITD-028) |
-| Kill random workers mid-job | Recovery |
-| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) |
+| Test | Proves | In repo |
+|---|---|---|
+| Golden: regenerate the seeded files in NumPy and compare with `result.npy` bit for bit | Correctness | `worker/tests/test_golden_mean.py`; e2e NumPy check |
+| Scheduler over random, adversarial and one-slow-worker completion orders | Invariant, task count, exactly one final merge | `api/test/scheduler*.test.ts` (live=f; one final merge for f≤40) |
+| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Idle time stays low with uneven speeds (IPD-009) | Not automated |
+| Every completion delivered twice and out of order | Idempotency | `api/test/coordinator-idempotency.integration.test.ts` (duplicate GENERATE) |
+| Both suites parse `contracts/examples/` | Message contracts agree (ITD-025) | `contract-examples` tests |
+| Barrier SQL paths equal `paths.inputPath()` | One path source (ITD-028) | `api/test/paths.test.ts` |
+| Kill random workers mid-job | Recovery | Not automated |
+| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `scripts/benchmark-job.py` (manual) |

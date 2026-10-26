@@ -106,8 +106,8 @@ cd worker && pytest
 
 ## Definition of done
 
-- [ ] Works locally against the docker compose infra.
-- [ ] Tests cover the change.
-- [ ] HLD, LLD and diagrams updated if behaviour, schema, contracts, endpoints, config or flows changed.
-- [ ] Every new decision recorded with the right status (see Decision authority).
-- [ ] `docs/open-questions.md` updated.
+- [x] Works locally against the docker compose infra (`./scripts/verify-all.sh`).
+- [x] Tests cover the change (unit + e2e; integration via `DISMEAN_INTEGRATION=1` in `api`).
+- [x] HLD, LLD and diagrams updated if behaviour, schema, contracts, endpoints, config or flows changed.
+- [x] Every new decision recorded with the right status (see Decision authority).
+- [x] `docs/open-questions.md` updated.

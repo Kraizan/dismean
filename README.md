@@ -40,4 +40,6 @@ Or manually:
 cd api && npm test
 cd worker && pytest
 ./scripts/e2e.sh   # requires API + workers running
+DISMEAN_INTEGRATION=1 cd api && npm test   # postgres idempotency test
+BENCHMARK_F=20000 ./scripts/benchmark-job.py   # ITD-027 (API + workers up)
 ```

@@ -206,3 +206,15 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 **Status:** Accepted (delegated) · **Date:** 2026-10-25
 - **Decision:** a Vite + React + TS single-page app with plain `fetch`, a 1 s polling hook and plain CSS. No state or component libraries. In development, Vite proxies `/api` to port 3000.
 - **Why:** a light, free, same-language thin client. Rejected: plain HTML (clumsy for a live dashboard), Next.js (overkill).
+
+### ITD-030: RabbitMQ definitions bootstrap
+**Status:** Accepted (delegated) · **Date:** 2026-10-26
+- **Decision:** `infra/rabbitmq/definitions.json` declares `guest` (sha256 hash) and `/` permissions; `rabbitmq.conf` sets only `load_definitions` (not `management.load_definitions` on the same file).
+- **Why:** `load_definitions` skips default user seed; duplicate import hung boot; without `guest`, AMQP connections reset.
+- **Consequences:** rotate the hash if the local password changes; management UI still uses `guest`.
+
+### ITD-031: Coordinator queue delivery limit
+**Status:** Accepted (delegated) · **Date:** 2026-10-26
+- **Decision:** `dm.coordinator` uses `x-delivery-limit: 1000000` instead of `-1`.
+- **Why:** on `rabbitmq:4-management`, unlimited (`-1`) is not used at import (open-questions V-3); coordinator does not nack in normal operation (ITD-022).
+- **Consequences:** document in LLD; revisit if broker adds supported unlimited quorum limit.
