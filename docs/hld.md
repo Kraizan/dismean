@@ -77,7 +77,7 @@ State machines: [job-state-machine.md](diagrams/job-state-machine.md). Sequence:
 
 | Process | Run with | Port |
 |---|---|---|
-| Postgres 16, RabbitMQ 4 + management | `docker compose up` (loads `definitions.json`) | 5432; 5672, 15672 |
+| Postgres 16, RabbitMQ 4 + management | `docker compose up` (named volumes; RabbitMQ `hostname: rabbitmq`; loads `definitions.json`) | 5432; 5672, 15672 |
 | API | `scripts/run-api.sh` (restart loop; the API exits on broker loss, ITD-033) | 3000 |
 | Supervisor + W workers | `.venv/bin/python -m dismean_worker.supervisor` in `worker/` (W from `GET /fleet`) | — |
 | UI | `npm run dev` in `ui/` (proxies `/api` to 3000) | 5173 |

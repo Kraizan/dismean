@@ -33,7 +33,7 @@ Onboarding index: every tracked source path → what it does → where the desig
 | [api/src/config.ts](../api/src/config.ts) | Zod parse of env vars | §13 |
 | [api/src/paths.ts](../api/src/paths.ts) | **Only** builder for job/input/partial/result paths (ITD-028) | §11 |
 | [api/src/messages.ts](../api/src/messages.ts) | Zod schemas for queue payloads | §4 |
-| [api/src/events.ts](../api/src/events.ts) | In-memory ring buffer for SSE `/events` | §10 |
+| [api/src/events.ts](../api/src/events.ts) | In-memory ring buffer for `GET /events` polling | §10 |
 
 ### Database
 
@@ -66,6 +66,8 @@ Onboarding index: every tracked source path → what it does → where the desig
 | Path | Role | LLD |
 |---|---|---|
 | [api/src/relay/index.ts](../api/src/relay/index.ts) | Fair-share dispatch: budget from queue depth, round-robin jobs, MERGE before GENERATE (ITD-034) | §7 |
+| [api/src/relay/reconcilePublished.ts](../api/src/relay/reconcilePublished.ts) | Reset orphaned `PUBLISHED` tasks (ITD-037) | §7 |
+| [api/src/mq/queueStats.ts](../api/src/mq/queueStats.ts) | RabbitMQ management API depth for `dm.tasks` | §7 |
 
 ### HTTP routes
 
@@ -76,7 +78,7 @@ Onboarding index: every tracked source path → what it does → where the desig
 | [api/src/routes/fleet.ts](../api/src/routes/fleet.ts) | `GET/PUT /fleet`, prune dead workers, seed default W | §10 |
 | [api/src/routes/cleanup.ts](../api/src/routes/cleanup.ts) | Manual cleanup trigger and storage stats | §12 |
 | [api/src/routes/stats.ts](../api/src/routes/stats.ts) | Aggregated snapshot (jobs, queue, workers) | §10 |
-| [api/src/routes/events.ts](../api/src/routes/events.ts) | SSE stream of in-memory events | §10 |
+| [api/src/routes/events.ts](../api/src/routes/events.ts) | `GET /events?after_id=` JSON poll | §10 |
 | [api/src/routes/health.ts](../api/src/routes/health.ts) | Liveness for compose and scripts | §10 |
 
 ### Stats and observability (display-only)

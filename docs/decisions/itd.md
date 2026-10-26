@@ -253,3 +253,9 @@ Entries are never deleted; a superseded entry is kept as a stub. Statuses and de
 **Status:** Accepted (delegated) · **Date:** 2026-10-26
 - **Decision:** formatting, estimates, validation and event/job filtering live in `ui/src/format.ts` and are tested with vitest (same runner as the API). No DOM test library.
 - **Why:** these are the parts that hold logic; rendering is checked manually and by the browser smoke test. Rejected: jsdom plus Testing Library (more dependencies for little extra coverage at this size).
+
+### ITD-037: Reconcile orphaned `PUBLISHED` tasks
+**Status:** Accepted (delegated) · **Date:** 2026-10-26
+- **Decision:** the relay resets `PUBLISHED` → `CREATED` when (1) API starts and `dm.tasks` has zero ready and zero unacked (broker empty), or (2) a row stayed `PUBLISHED` longer than `PUBLISHED_STALE_MS` with no worker `BUSY` on that `task_id`. Docker Compose uses named volumes and a fixed RabbitMQ `hostname` so quorum state survives container recreation.
+- **Why:** the outbox only selects `CREATED`; a lost broker message otherwise hangs the job forever (invariant 13).
+- **Consequences:** at-least-once republish is safe with ITD-009; `api/src/relay/reconcilePublished.ts`, `api/src/mq/queueStats.ts`.

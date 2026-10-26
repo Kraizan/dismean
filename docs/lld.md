@@ -426,6 +426,8 @@ The cursor's timestamp is read in SQL: a JavaScript `Date` drops Postgres micros
 
 A crash after publishing but before commit republishes the batch (at-least-once). The duplicates are harmless (ITD-009). Workers' prefetch of 1 plus about two ready tasks per worker means a finished worker never waits for the relay, while per-job ordering stays in SQL.
 
+**Orphaned `PUBLISHED` (ITD-037):** on relay start, if `dm.tasks` has zero ready and zero unacked (management API), reset all `PUBLISHED` on active jobs to `CREATED`. Each relay tick with `budget = 0` also resets `PUBLISHED` rows older than `PUBLISHED_STALE_MS` when no live worker heartbeat has `state = BUSY` and `task_id` equal to that row.
+
 ## 8. Worker
 
 ### 8.1 Threads
@@ -514,7 +516,7 @@ W is per supervisor (ITD-032). The worker's own SIGTERM handler only schedules t
 | `POST` | `/jobs` | `{ "f": int, "c": int }` | `201` job + `estimate` | `400` validation |
 | `GET` | `/jobs` | `?status=&limit=50&offset=0` | `200 { jobs: Job[] }` | — |
 | `GET` | `/jobs/:id` | — | `200` job + progress + task counts + pool items | `404` |
-| `GET` | `/jobs/:id/tasks` | — | `200 { tasks: Task[] }` | `404` |
+| `GET` | `/jobs/:id/tasks` | `?limit=` (default 500, max 5000), `?offset=`, `?kind=`, `?status=` | `200 { total, limit, offset, tasks }` | `404`, `400` |
 | `POST` | `/jobs/:id/cancel` | — | `202` job | `404`, `409` if finished |
 | `DELETE` | `/jobs/:id` | — | `204` (deletes rows and `DATA_DIR/jobs/:id`) | `404`, `409` if active |
 | `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |
@@ -637,6 +639,7 @@ every CLEANUP_INTERVAL_MS, and on POST /cleanup (?force=true uses a retention of
 | `WORKER_STALE_MS` | `10000` | Heartbeat age after which a worker is shown as dead |
 | `WORKER_PRUNE_MS` | `60000` | Heartbeat age after which a worker is removed from the list |
 | `EVENT_BUFFER_SIZE` | `500` | In-memory event log size |
+| `PUBLISHED_STALE_MS` | `120000` | Reconcile `PUBLISHED` → `CREATED` when idle (ITD-037) |
 
 **Worker / supervisor**
 

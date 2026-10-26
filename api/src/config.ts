@@ -22,6 +22,7 @@ const configSchema = z.object({
   WORKER_STALE_MS: z.coerce.number().int().positive().default(10_000),
   WORKER_PRUNE_MS: z.coerce.number().int().positive().default(60_000),
   EVENT_BUFFER_SIZE: z.coerce.number().int().positive().default(500),
+  PUBLISHED_STALE_MS: z.coerce.number().int().positive().default(120_000),
 });
 
 export type Config = z.infer<typeof configSchema>;

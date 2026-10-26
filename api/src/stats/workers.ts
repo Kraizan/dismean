@@ -172,3 +172,13 @@ export function isJobBusyOnWorkers(jobId: string, config?: Config): boolean {
   }
   return false;
 }
+
+export function isTaskBusyOnWorkers(taskId: string, config?: Config): boolean {
+  const now = Date.now();
+  const staleMs = config?.WORKER_STALE_MS ?? 10_000;
+  for (const w of workers.values()) {
+    const age = now - new Date(w.last_heartbeat_at).getTime();
+    if (age <= staleMs && w.task_id === taskId && w.state === "BUSY") return true;
+  }
+  return false;
+}

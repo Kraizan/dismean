@@ -12,7 +12,7 @@ import { publishJobStopped } from "../mq/connection.js";
 import { inputPath, resultPaths } from "../paths.js";
 import { RELAY_SIGNAL } from "../coordinator/index.js";
 import { streamCsvFile } from "../storage/csv.js";
-import { streamNpyAsCsv } from "../storage/npy.js";
+import { streamNpyAsCsv, streamNpyFile } from "../storage/npy.js";
 import { deleteJobDir } from "../storage/deleteJobDir.js";
 import { formatJob, formatJobs } from "./jobFormat.js";
 import crypto from "node:crypto";
@@ -36,6 +36,15 @@ const listQuerySchema = z.object({
     .optional(),
   limit: z.coerce.number().int().positive().max(200).default(50),
   offset: z.coerce.number().int().nonnegative().default(0),
+});
+
+const tasksQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(5000).default(500),
+  offset: z.coerce.number().int().nonnegative().default(0),
+  kind: z.enum(["GENERATE", "MERGE"]).optional(),
+  status: z
+    .enum(["CREATED", "PUBLISHED", "DONE", "FAILED", "CANCELLED"])
+    .optional(),
 });
 
 function randomSeed(): number {
@@ -144,6 +153,12 @@ export function jobsRouter(
       res.status(404).json({ error: "not found" });
       return;
     }
+    const query = tasksQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: "invalid query" });
+      return;
+    }
+    const { limit, offset, kind, status } = query.data;
     try {
       const { rows: jobRows } = await pool.query<{ id: string }>(
         `SELECT id FROM jobs WHERE id = $1`,
@@ -153,6 +168,23 @@ export function jobsRouter(
         res.status(404).json({ error: "not found" });
         return;
       }
+      const filters: string[] = ["job_id = $1"];
+      const params: unknown[] = [idCheck.data];
+      if (kind) {
+        params.push(kind);
+        filters.push(`kind = $${params.length}::task_kind`);
+      }
+      if (status) {
+        params.push(status);
+        filters.push(`status = $${params.length}::task_status`);
+      }
+      const where = filters.join(" AND ");
+      const { rows: countRows } = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM tasks WHERE ${where}`,
+        params,
+      );
+      const total = Number(countRows[0]?.count ?? 0);
+      const listParams = [...params, limit, offset];
       const { rows } = await pool.query<{
         id: string;
         kind: string;
@@ -173,11 +205,15 @@ export function jobsRouter(
         `SELECT id, kind::text, status::text, attempt, level, file_start, file_count,
                 input_count, is_final, worker_id, duration_ms, last_error,
                 created_at, published_at, completed_at
-         FROM tasks WHERE job_id = $1
-         ORDER BY level ASC, file_start ASC NULLS LAST, created_at ASC`,
-        [idCheck.data],
+         FROM tasks WHERE ${where}
+         ORDER BY level ASC, file_start ASC NULLS LAST, created_at ASC
+         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+        listParams,
       );
       res.json({
+        total,
+        limit,
+        offset,
         tasks: rows.map((t) => ({
           ...t,
           created_at: t.created_at.toISOString(),
@@ -301,6 +337,12 @@ export function jobsRouter(
       }
       const rel = resultPaths(job.id).csv;
       const abs = path.join(config.DATA_DIR, rel);
+      try {
+        await access(abs);
+      } catch {
+        res.status(404).json({ error: "result file missing on disk" });
+        return;
+      }
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="job-${job.id.slice(0, 8)}-result.csv"`,
@@ -333,13 +375,18 @@ export function jobsRouter(
       }
       const rel = resultPaths(job.id).npy;
       const abs = path.join(config.DATA_DIR, rel);
-      await access(abs);
+      try {
+        await access(abs);
+      } catch {
+        res.status(404).json({ error: "result file missing on disk" });
+        return;
+      }
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="job-${job.id.slice(0, 8)}-result.npy"`,
       );
-      res.sendFile(abs);
+      await streamNpyFile(abs, res);
     } catch (err) {
       next(err);
     }

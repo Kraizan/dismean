@@ -11,6 +11,7 @@ import {
   createConfirmChannel,
   publishTaskBatch,
 } from "../mq/connection.js";
+import { reconcileStalePublished } from "./reconcilePublished.js";
 
 /** The job that received the last dispatched task; the next round starts after it. */
 export interface DispatchCursor {
@@ -125,7 +126,12 @@ export async function relayOnce(
   budgetOverride?: number,
 ): Promise<number> {
   const budget = budgetOverride ?? (await dispatchBudget(confirmCh, config));
-  if (budget <= 0) return 0;
+  if (budget <= 0) {
+    await reconcileStalePublished(pool, config).catch((err) =>
+      console.error("reconcile PUBLISHED error", err),
+    );
+    return 0;
+  }
 
   const client = await pool.connect();
   try {
@@ -216,6 +222,9 @@ export async function startRelay(
     }
   };
 
+  await reconcileStalePublished(pool, config, { startup: true }).catch(
+    (err) => console.error("startup reconcile PUBLISHED error", err),
+  );
   await tick();
 
   const interval = setInterval(() => void tick(), config.RELAY_INTERVAL_MS);

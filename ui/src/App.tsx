@@ -180,7 +180,7 @@ export function App() {
   const refreshSelectedJob = useCallback(async (id: string) => {
     const [jobRes, tasksRes] = await Promise.all([
       fetch(`${API}/jobs/${id}`),
-      fetch(`${API}/jobs/${id}/tasks`),
+      fetch(`${API}/jobs/${id}/tasks?limit=5000`),
     ]);
     if (!jobRes.ok) {
       if (jobRes.status === 404) {

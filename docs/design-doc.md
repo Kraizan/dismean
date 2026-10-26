@@ -1,6 +1,6 @@
 # Design doc: Distributed Mean
 
-**Status:** Draft v3, design agreed, not implemented · **Updated:** 2026-10-25 · [HLD](hld.md) · [LLD](lld.md) · [ITDs](decisions/itd.md) · [IPDs](decisions/ipd.md)
+**Status:** Implemented (local) · **Updated:** 2026-10-26 · [HLD](hld.md) · [LLD](lld.md) · [ITDs](decisions/itd.md) · [IPDs](decisions/ipd.md)
 
 ## 1. Problem
 
@@ -23,8 +23,7 @@ Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` (IPD-011). Values: integers 
 5. Live observability.
 
 **Not now:**
-- Strict fair share across jobs (future-work §1).
-- Changing W through the API (IPD-008, future-work §4).
+- Weighted fair share by job size (future-work §1).
 - Hang detection faster than about 15 minutes (ITD-008).
 - Running on more than one machine (HLD §7).
 - A disk cap (IPD-002).
@@ -122,6 +121,7 @@ Uneven speeds change who does how many tasks, not whether work is available.
 | Worker hung | `x-consumer-timeout` (15 min) closes the channel; the worker exits and the supervisor restarts it | ITD-008, ITD-021 |
 | Duplicate run | Deterministic output, atomic rename, task counted once | ITD-009 |
 | API crash between commit and publish | Relay republishes `CREATED` tasks | ITD-005 |
+| Broker empty but DB still `PUBLISHED` | Startup or stale reconcile → `CREATED` | ITD-037 |
 | Coordinator crash | Transaction rolls back; the message is redelivered | ITD-004 |
 | Postgres down | Coordinator holds the message unacked and retries with backoff | ITD-022 |
 | RabbitMQ restart or connection loss | API and workers exit; `run-api.sh` and the supervisor restart them; unacked work is redelivered | ITD-021, ITD-033 |
@@ -176,3 +176,25 @@ Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` is the
 | API validation, cancel, and fleet W scaling | HTTP errors, stop broadcast, and dynamic W (`GET/PUT /fleet`) | `scripts/e2e-api-errors.py`, `scripts/e2e-fleet.py` |
 | Several job sizes end-to-end | Generation/reduction edge sizes | `scripts/e2e-matrix.py` |
 | Worker task IO | Generate/merge atomic writes | `worker/tests/test_tasks.py` |
+| Stale `PUBLISHED` without broker message | Reconcile → `CREATED` | `api/test/reconcile-published.integration.test.ts` |
+| Input `.npy` header validation | Reject wrong dtype / shape | `api/test/npy.test.ts` |
+
+## 10. Architecture FAQ (interview defense)
+
+**Why materialize F input `.npy` files instead of fusing GENERATE with the first partial?**  
+The spec asks for F files workers can read; IPD-001 keeps a clear generation barrier; `GET /jobs/:id/inputs/:index.csv` needs on-disk inputs. Fusing leaf generation into `count=5` partials would halve input I/O but drop per-file inspection.
+
+**Does MERGE violate the “≤5 files in RAM” rule?**  
+No. `merge.py` keeps one `int64` accumulator and memory-maps **one** input at a time (`mmap_mode="r"`), adds, then `del` before the next. At most one mapped input plus the accumulator are live.
+
+**Why a single-threaded coordinator instead of workers updating Postgres?**  
+The pool tail rule (`2–4 READY` only when `open_merges = 0`) is a **job-global** predicate. Concurrent writers could each see `open_merges > 0` and skip the final tail merge, hanging the job. `FOR UPDATE` on the job row serializes scheduling safely. Scale-out path: shard `dm.coordinator` by `job_id` (future-work §3); ITD-027 showed batching is not needed yet at F = 20k.
+
+**What if a task is `PUBLISHED` in Postgres but the broker no longer has the message?**  
+ITD-037: on API startup, if `dm.tasks` has zero ready and zero unacked, reset all `PUBLISHED` on active jobs to `CREATED`. While running, reset stale `PUBLISHED` rows (older than `PUBLISHED_STALE_MS`) when no worker heartbeat reports `BUSY` on that `task_id`. Safe because tasks are deterministic and completions are idempotent (ITD-009).
+
+**Duplicate completion after consumer timeout or crash loop?**  
+First completion: `UPDATE … WHERE status IN ('CREATED','PUBLISHED')` → `DONE`. Second: zero rows → `duplicate_completion`. A late `task.failed` after success hits `stale_failure` because the task is no longer open.
+
+**Why fair-share dispatch instead of RabbitMQ priority?**  
+Quorum queues on RabbitMQ 4 delivered strict priority (all MERGE before any GENERATE), starving other jobs’ generation. Fair-share keeps ~2 tasks per worker in SQL order (ITD-034).

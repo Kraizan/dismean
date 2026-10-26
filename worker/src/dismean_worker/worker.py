@@ -8,6 +8,7 @@ import socket
 import sys
 import time
 import traceback
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ from .messages import (
 from .tasks import run_task
 
 LOG = logging.getLogger(__name__)
+
+STOPPED_JOBS_MAX = 1000
 
 EXCHANGE_TASKS = "dm.tasks"
 EXCHANGE_EVENTS = "dm.events"
@@ -61,6 +64,7 @@ class WorkerRuntime:
     current_task_kind: str | None = None
     draining: bool = False
     stopped_jobs: set[str] = field(default_factory=set)
+    stopped_jobs_order: deque[str] = field(default_factory=deque)
     channel: BlockingChannel | None = None
     connection: pika.BlockingConnection | None = None
     tasks_consumer_tag: str | None = None
@@ -294,6 +298,16 @@ def _on_task(
     _submit_task(rt, delivery_tag, msg)
 
 
+def _remember_stopped_job(rt: WorkerRuntime, job_id: str) -> None:
+    if job_id in rt.stopped_jobs:
+        return
+    rt.stopped_jobs.add(job_id)
+    rt.stopped_jobs_order.append(job_id)
+    while len(rt.stopped_jobs_order) > STOPPED_JOBS_MAX:
+        old = rt.stopped_jobs_order.popleft()
+        rt.stopped_jobs.discard(old)
+
+
 def _on_control(
     rt: WorkerRuntime,
     _ch: BlockingChannel,
@@ -304,7 +318,7 @@ def _on_control(
     try:
         raw = json.loads(body)
         stopped = validate_job_stopped(raw)
-        rt.stopped_jobs.add(stopped["job_id"])
+        _remember_stopped_job(rt, stopped["job_id"])
     except Exception:
         LOG.exception("invalid control message")
 
