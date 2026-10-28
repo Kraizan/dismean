@@ -5,18 +5,29 @@
 ## 1. Overview
 
 ```mermaid
-flowchart LR
+flowchart TB
   User((User / UI)) -->|REST; polls /stats + jobs| API
+
   subgraph API["API (Node / Express / TS)"]
-    HTTP[Routes] --- COORD[Coordinator] --- RELAY[Relay / fair-share dispatcher] --- CLEAN[Cleanup] --- STATS[Stats, in memory]
+    direction TB
+    HTTP[Routes]
+    COORD[Coordinator]
+    RELAY[Relay / fair-share dispatcher]
+    CLEAN[Cleanup]
+    STATS[Stats, in memory]
   end
+
   API <-->|SQL| PG[(Postgres)]
+
   RELAY -->|tasks into free slots, round-robin per job| MQ{{RabbitMQ}}
   MQ -->|task results, dead letters| COORD
   MQ -->|heartbeats| STATS
+
   subgraph Fleet["Workers (Python)"]
+    direction TB
     SUP[Supervisor] --> W1[Worker] & W2[Worker] & WN[Worker]
   end
+
   MQ -->|dm.tasks, prefetch 1| W1 & W2 & WN
   W1 & W2 & WN -->|results, heartbeats| MQ
   W1 & W2 & WN <-->|.npy| FS[(DATA_DIR)]
