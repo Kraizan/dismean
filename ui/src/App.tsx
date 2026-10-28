@@ -23,8 +23,8 @@ type Stats = {
   };
   active_jobs: Array<{
     id: string;
-    f: number;
-    c: number;
+    file_count: number;
+    values_per_file: number;
     status: string;
     waiting: boolean;
     progress: { generation: number; reduction: number };
@@ -36,8 +36,8 @@ type PoolStateEntry = { items: number; files_covered: number };
 type JobSummary = {
   id: string;
   status: string;
-  f: number;
-  c: number;
+  file_count: number;
+  values_per_file: number;
   seed?: number;
   generated_files?: number;
   failure_reason?: string | null;
@@ -181,7 +181,7 @@ export function App() {
       const res = await fetch(`${API}/jobs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ f: submitF, c: submitC }),
+        body: JSON.stringify({ file_count: submitF, values_per_file: submitC }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -504,7 +504,7 @@ export function App() {
                         <span className={`badge badge-${status}`}>{status}</span>
                       </span>
                       <span className="job-list-meta">
-                        F={j.f} · C={j.c}
+                        F={j.file_count} · C={j.values_per_file}
                       </span>
                       {(active || progress.generation < 1) && (
                         <MiniProgress
@@ -628,7 +628,7 @@ export function App() {
                     <span className="mono">{shortId(selectedJob.id)}</span>
                   </h2>
                   <p className="job-hero-sub">
-                    F={selectedJob.f} · C={selectedJob.c} · seed{" "}
+                    F={selectedJob.file_count} · C={selectedJob.values_per_file} · seed{" "}
                     {selectedJob.seed ?? "—"}
                     {selectedJob.timings_ms?.total != null && (
                       <>
@@ -748,7 +748,7 @@ export function App() {
                 taskGraph.tasks.length > 0 &&
                 selectedJob && (
                   <TaskGraphModal
-                    title={`Task graph · ${shortId(selectedJob.id)} · F=${selectedJob.f}`}
+                    title={`Task graph · ${shortId(selectedJob.id)} · F=${selectedJob.file_count}`}
                     onClose={() => {
                       setTaskGraphOpen(false);
                       setSelectedTaskId(null);

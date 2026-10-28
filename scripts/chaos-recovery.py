@@ -83,7 +83,7 @@ def verify_mean(job_id: str, f: int, c: int) -> bool:
 def run_once(f: int, c: int) -> int | None:
     """Return kill count on success path setup, None if no in-flight kills (retry with larger job)."""
     print(f"==> chaos recovery (f={f}, c={c}, 3 kill rounds)")
-    job_id = http("POST", "/jobs", {"f": f, "c": c})["id"]
+    job_id = http("POST", "/jobs", {"file_count": f, "values_per_file": c})["id"]
     kills = kill_rounds(job_id)
     if kills == 0:
         try:

@@ -30,7 +30,7 @@ describe.runIf(runIntegration)("coordinator idempotency (postgres)", () => {
     try {
       await client.query("BEGIN");
       await client.query(
-        `INSERT INTO jobs (id, f, c, seed, generated_files) VALUES ($1, 5, 3, 1, 0)`,
+        `INSERT INTO jobs (id, file_count, values_per_file, seed, generated_files) VALUES ($1, 5, 3, 1, 0)`,
         [jobId],
       );
       await client.query(

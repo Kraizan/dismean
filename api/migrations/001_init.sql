@@ -6,8 +6,8 @@ CREATE TYPE item_state  AS ENUM ('READY', 'RESERVED', 'CONSUMED', 'DELETED');
 
 CREATE TABLE jobs (
   id                       uuid PRIMARY KEY,
-  f                        integer NOT NULL CHECK (f BETWEEN 2 AND 99999),
-  c                        integer NOT NULL CHECK (c BETWEEN 2 AND 999999),
+  file_count               integer NOT NULL CHECK (file_count BETWEEN 2 AND 99999),
+  values_per_file          integer NOT NULL CHECK (values_per_file BETWEEN 2 AND 999999),
   status                   job_status NOT NULL DEFAULT 'GENERATING',
   seed                     bigint NOT NULL CHECK (seed >= 0),
   generated_files          integer NOT NULL DEFAULT 0,

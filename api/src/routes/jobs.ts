@@ -22,8 +22,8 @@ import crypto from "node:crypto";
 const uuidParamSchema = z.string().uuid();
 
 const createBodySchema = z.object({
-  f: z.number().int().min(2).max(99_999),
-  c: z.number().int().min(2).max(999_999),
+  file_count: z.number().int().min(2).max(99_999),
+  values_per_file: z.number().int().min(2).max(999_999),
 });
 
 const listQuerySchema = z.object({
@@ -68,7 +68,7 @@ export function jobsRouter(
       res.status(400).json({ error: "validation failed", details: parsed.error.flatten() });
       return;
     }
-    const { f, c } = parsed.data;
+    const { file_count, values_per_file } = parsed.data;
     const id = crypto.randomUUID();
     const seed = randomSeed();
 
@@ -78,13 +78,13 @@ export function jobsRouter(
       await client.query(
         `
         WITH j AS (
-          INSERT INTO jobs (id, f, c, seed) VALUES ($1, $2, $3, $4) RETURNING id, f
+          INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, $2, $3, $4) RETURNING id, file_count
         )
         INSERT INTO tasks (id, job_id, kind, level, file_start, file_count)
-        SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.f - s)
-        FROM j, generate_series(0, j.f - 1, 5) AS s
+        SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.file_count - s)
+        FROM j, generate_series(0, j.file_count - 1, 5) AS s
         `,
-        [id, f, c, seed],
+        [id, file_count, values_per_file, seed],
       );
       await client.query("COMMIT");
     } catch (err) {
@@ -476,7 +476,7 @@ export function jobsRouter(
         res.status(404).json({ error: "not found" });
         return;
       }
-      if (index >= job.f) {
+      if (index >= job.file_count) {
         res.status(404).json({ error: "input index out of range" });
         return;
       }

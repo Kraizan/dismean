@@ -26,7 +26,7 @@ describe.runIf(runIntegration)("fair-share dispatch order (ITD-003)", () => {
     const a = crypto.randomUUID();
     const b = crypto.randomUUID();
     await client.query(
-      `INSERT INTO jobs (id, f, c, seed, status, created_at) VALUES
+      `INSERT INTO jobs (id, file_count, values_per_file, seed, status, created_at) VALUES
          ($1, 50, 3, 1, 'REDUCING', now() - interval '2 minutes'),
          ($2, 50, 3, 1, 'GENERATING', now() - interval '1 minute')`,
       [a, b],

@@ -143,7 +143,7 @@ export async function relayOnce(
     }
 
     const { rows } = await client.query<DispatchRow>(
-      `SELECT t.*, j.c, j.seed::text AS seed FROM tasks t
+      `SELECT t.*, j.values_per_file AS c, j.seed::text AS seed FROM tasks t
        JOIN jobs j ON j.id = t.job_id
        WHERE t.id = ANY($1::uuid[]) AND t.status = 'CREATED'
        FOR UPDATE OF t SKIP LOCKED`,

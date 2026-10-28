@@ -21,9 +21,9 @@ def wait(job_id: str, timeout_s: float = 180) -> dict:
 
 def main() -> int:
     print("==> fairness: large job A, then small job B")
-    big = http("POST", "/jobs", {"f": 2000, "c": 20_000})["id"]
+    big = http("POST", "/jobs", {"file_count": 2000, "values_per_file": 20_000})["id"]
     time.sleep(0.3)
-    small = http("POST", "/jobs", {"f": 10, "c": 5})["id"]
+    small = http("POST", "/jobs", {"file_count": 10, "values_per_file": 5})["id"]
 
     b = wait(small)
     a_status_when_b_done = http("GET", f"/jobs/{big}")["status"]

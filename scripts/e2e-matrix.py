@@ -14,7 +14,7 @@ def main() -> int:
     print("==> e2e matrix", CASES)
     http("GET", "/health")
     for f, c in CASES:
-        job = http("POST", "/jobs", {"f": f, "c": c})
+        job = http("POST", "/jobs", {"file_count": f, "values_per_file": c})
         job_id = job["id"]
         for _ in range(180):
             j = http("GET", f"/jobs/{job_id}")

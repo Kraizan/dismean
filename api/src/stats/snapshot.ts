@@ -104,14 +104,14 @@ export async function buildStatsSnapshot(
 
   const { rows: genJobs } = await pool.query<{
     id: string;
-    f: number;
-    c: number;
+    file_count: number;
+    values_per_file: number;
     status: string;
     generated_files: number;
     done_tasks: string;
     live_items: string;
   }>(
-    `SELECT j.id, j.f, j.c, j.status::text, j.generated_files,
+    `SELECT j.id, j.file_count, j.values_per_file, j.status::text, j.generated_files,
             (SELECT count(*) FROM tasks t WHERE t.job_id = j.id AND t.status = 'DONE')::text AS done_tasks,
             (SELECT count(*) FROM items i WHERE i.job_id = j.id AND i.state IN ('READY', 'RESERVED'))::text AS live_items
      FROM jobs j
@@ -129,14 +129,14 @@ export async function buildStatsSnapshot(
     if (waiting) waitingCount += 1;
 
     const progress = {
-      generation: j.generated_files / j.f,
-      reduction: reductionProgress(j.status, j.f, Number(j.live_items)),
+      generation: j.generated_files / j.file_count,
+      reduction: reductionProgress(j.status, j.file_count, Number(j.live_items)),
     };
 
     active_jobs.push({
       id: j.id,
-      f: j.f,
-      c: j.c,
+      file_count: j.file_count,
+      values_per_file: j.values_per_file,
       status: j.status,
       waiting,
       progress,

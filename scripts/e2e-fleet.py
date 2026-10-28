@@ -67,7 +67,7 @@ def main() -> int:
         print("ok scaled down to 2 live workers")
 
         print("==> run job at W=2")
-        _, job = request("POST", "/jobs", {"f": 10, "c": 4}, expect_status=201)
+        _, job = request("POST", "/jobs", {"file_count": 10, "values_per_file": 4}, expect_status=201)
         job_id = job["id"]
         for _ in range(60):
             _, j = request("GET", f"/jobs/{job_id}", expect_status=200)

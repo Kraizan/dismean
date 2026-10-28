@@ -19,8 +19,8 @@ export type ItemState = "READY" | "RESERVED" | "CONSUMED" | "DELETED";
 
 export interface JobRow {
   id: string;
-  f: number;
-  c: number;
+  file_count: number;
+  values_per_file: number;
   status: JobStatus;
   seed: string;
   generated_files: number;

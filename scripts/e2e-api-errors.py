@@ -34,8 +34,8 @@ def request(method: str, path: str, body: dict | None = None, expect_status: int
 
 def main() -> int:
     print("==> api errors & 404s")
-    request("POST", "/jobs", {"f": 1, "c": 5}, expect_status=400)
-    request("POST", "/jobs", {"f": 10, "c": 1}, expect_status=400)
+    request("POST", "/jobs", {"file_count": 1, "values_per_file": 5}, expect_status=400)
+    request("POST", "/jobs", {"file_count": 10, "values_per_file": 1}, expect_status=400)
     request("GET", "/jobs/not-a-uuid", expect_status=404)
     request("GET", "/jobs/not-a-uuid/task-graph", expect_status=404)
     request("GET", "/jobs/00000000-0000-4000-8000-000000000000/task-graph", expect_status=404)
@@ -44,7 +44,7 @@ def main() -> int:
     request("GET", "/jobs/00000000-0000-4000-8000-000000000000", expect_status=404)
 
     print("==> cancel + delete flow")
-    _, job = request("POST", "/jobs", {"f": 500, "c": 10}, expect_status=201)
+    _, job = request("POST", "/jobs", {"file_count": 500, "values_per_file": 10}, expect_status=201)
     job_id = job["id"]
     request("POST", f"/jobs/{job_id}/cancel", expect_status=202)
     j = {"status": ""}

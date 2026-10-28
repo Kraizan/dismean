@@ -39,7 +39,7 @@ def main() -> None:
     print(http("GET", "/health"))
 
     print("==> create job f=12 c=5")
-    job = http("POST", "/jobs", {"f": 12, "c": 5})
+    job = http("POST", "/jobs", {"file_count": 12, "values_per_file": 5})
     job_id = job["id"]
     print(f"job_id={job_id}")
 
@@ -60,7 +60,7 @@ def main() -> None:
         sys.exit(1)
 
     print("==> verify result vs seeded numpy")
-    f, c = job["f"], job["c"]
+    f, c = job["file_count"], job["values_per_file"]
     sums = np.zeros(c, dtype=np.int64)
     for i in range(f):
         p = DATA_DIR / f"jobs/{job_id}/inputs/{i:06d}.npy"

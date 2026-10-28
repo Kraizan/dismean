@@ -37,7 +37,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
     try {
       await client.query("BEGIN");
       await client.query(
-        `INSERT INTO jobs (id, f, c, seed) VALUES ($1, 10, 4, 99)`,
+        `INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, 10, 4, 99)`,
         [jobId],
       );
       await client.query(
@@ -78,7 +78,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
     try {
       await client.query("BEGIN");
       await client.query(
-        `INSERT INTO jobs (id, f, c, seed, status, generated_files) VALUES ($1, 5, 3, 1, 'REDUCING', 5)`,
+        `INSERT INTO jobs (id, file_count, values_per_file, seed, status, generated_files) VALUES ($1, 5, 3, 1, 'REDUCING', 5)`,
         [jobId],
       );
       await client.query(
@@ -121,7 +121,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(`INSERT INTO jobs (id, f, c, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
+      await client.query(`INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
       await client.query(
         `INSERT INTO tasks (id, job_id, kind, level, file_start, file_count, status, attempt)
          VALUES ($1, $2, 'GENERATE', 0, 0, 5, 'PUBLISHED', 3)`,
@@ -153,7 +153,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(`INSERT INTO jobs (id, f, c, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
+      await client.query(`INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
       await client.query(
         `INSERT INTO tasks (id, job_id, kind, level, file_start, file_count, status, attempt)
          VALUES ($1, $2, 'GENERATE', 0, 0, 5, 'PUBLISHED', 1)`,
@@ -189,7 +189,7 @@ describe.runIf(runIntegration)("coordinator scenarios (postgres)", () => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(`INSERT INTO jobs (id, f, c, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
+      await client.query(`INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
       await client.query(
         `INSERT INTO tasks (id, job_id, kind, level, file_start, file_count, status)
          VALUES ($1, $2, 'GENERATE', 0, 0, 5, 'PUBLISHED')`,

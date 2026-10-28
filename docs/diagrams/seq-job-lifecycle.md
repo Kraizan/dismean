@@ -14,7 +14,7 @@ sequenceDiagram
   participant FS as DATA_DIR
   participant CO as Coordinator
 
-  U->>API: POST /jobs {f:12, c:1000}
+  U->>API: POST /jobs {file_count:12, values_per_file:1000}
   API->>DB: tx: INSERT job (GENERATING, seed) + 3 GENERATE tasks (CREATED)
   API-->>U: 201 {job, estimate}
   API--)RL: signal

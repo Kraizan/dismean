@@ -51,7 +51,7 @@ def main() -> int:
         return 1
     print("ok API healthy and workers reconnected")
 
-    job_id = http("POST", "/jobs", {"f": 12, "c": 5})["id"]
+    job_id = http("POST", "/jobs", {"file_count": 12, "values_per_file": 5})["id"]
     for _ in range(120):
         job = http("GET", f"/jobs/{job_id}")
         if job["status"] == "COMPLETED":

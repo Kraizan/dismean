@@ -31,7 +31,7 @@ export async function createMerge(
   );
   const total = items.reduce((s, i) => s + i.count, 0);
   const maxLevel = items.reduce((m, i) => Math.max(m, i.level), 0);
-  const isFinal = total === job.f;
+  const isFinal = total === job.file_count;
 
   const {
     rows: [task],
@@ -126,10 +126,10 @@ export async function barrier(
      SELECT gen_random_uuid(), $1, 'INPUT', 1, 0,
             $2 || lpad(i::text, 6, '0') || '.npy', 'READY'
      FROM generate_series(0, $3 - 1) AS i`,
-    [job.id, prefix, job.f],
+    [job.id, prefix, job.file_count],
   );
 
-  await createLeafMerges(client, job.id, job.f);
+  await createLeafMerges(client, job.id, job.file_count);
   const scheduled = await schedule(client, job);
   const ev: PendingEvent = { type: "generation_completed", job_id: job.id };
   if (events) {

@@ -2,12 +2,12 @@ import type pg from "pg";
 import type { JobRow } from "../db/types.js";
 import { reductionProgress } from "../stats/progress.js";
 
-export function jobEstimate(f: number, c: number) {
-  const merge_tasks = Math.ceil((f - 1) / 4);
+export function jobEstimate(file_count: number, values_per_file: number) {
+  const merge_tasks = Math.ceil((file_count - 1) / 4);
   return {
-    input_bytes: f * c,
-    peak_partial_bytes: (merge_tasks - 1) * 8 * c,
-    generate_tasks: Math.ceil(f / 5),
+    input_bytes: file_count * values_per_file,
+    peak_partial_bytes: (merge_tasks - 1) * 8 * values_per_file,
+    generate_tasks: Math.ceil(file_count / 5),
     merge_tasks,
   };
 }
@@ -77,8 +77,8 @@ export async function formatJobs(pool: pg.Pool, jobs: JobRow[]) {
       : null;
     return {
       id: job.id,
-      f: job.f,
-      c: job.c,
+      file_count: job.file_count,
+      values_per_file: job.values_per_file,
       status: job.status,
       seed: Number(job.seed),
       generated_files: job.generated_files,
@@ -88,13 +88,13 @@ export async function formatJobs(pool: pg.Pool, jobs: JobRow[]) {
       finished_at: job.finished_at?.toISOString() ?? null,
       partials_cleaned_at: job.partials_cleaned_at?.toISOString() ?? null,
       progress: {
-        generation: job.generated_files / job.f,
-        reduction: reductionProgress(job.status, job.f, live),
+        generation: job.generated_files / job.file_count,
+        reduction: reductionProgress(job.status, job.file_count, live),
       },
       tasks: tasksByJob.get(job.id) ?? { GENERATE: {}, MERGE: {} },
       pool_items,
       timings_ms: jobTimings(job),
-      estimate: jobEstimate(job.f, job.c),
+      estimate: jobEstimate(job.file_count, job.values_per_file),
     };
   });
 }

@@ -52,10 +52,10 @@ async function runJob(client: pg.PoolClient, f: number, order: Order, seed: numb
   const rnd = mulberry32(seed);
   const jobId = crypto.randomUUID();
   await client.query(
-    `WITH j AS (INSERT INTO jobs (id, f, c, seed) VALUES ($1, $2, 3, 1) RETURNING id, f)
+    `WITH j AS (INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, $2, 3, 1) RETURNING id, file_count)
      INSERT INTO tasks (id, job_id, kind, level, file_start, file_count)
-     SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.f - s)
-     FROM j, generate_series(0, j.f - 1, 5) AS s`,
+     SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.file_count - s)
+     FROM j, generate_series(0, j.file_count - 1, 5) AS s`,
     [jobId, f],
   );
 

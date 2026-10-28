@@ -45,6 +45,7 @@ Onboarding index: every tracked source path → what it does. **System behaviour
 | [api/migrations/001_init.sql](../api/migrations/001_init.sql) | Core schema: jobs, tasks, pool items, outbox columns | §2 |
 | [api/migrations/002_fleet.sql](../api/migrations/002_fleet.sql) | `fleet` table for desired W | §2, §10 |
 | [api/migrations/003_fleet_source.sql](../api/migrations/003_fleet_source.sql) | `set_by_api` so `WORKER_COUNT` seeds until `PUT /fleet` | §13 |
+| [api/migrations/004_rename_job_f_c.sql](../api/migrations/004_rename_job_f_c.sql) | Rename `jobs.f` / `jobs.c` → `file_count` / `values_per_file` on upgrade | §2 |
 
 ### Message queue
 

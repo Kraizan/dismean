@@ -23,7 +23,7 @@ describe("reconcileStalePublished", () => {
     const taskId = crypto.randomUUID();
     const client = await pool.connect();
     try {
-      await client.query(`INSERT INTO jobs (id, f, c, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
+      await client.query(`INSERT INTO jobs (id, file_count, values_per_file, seed) VALUES ($1, 5, 3, 1)`, [jobId]);
       await client.query(
         `INSERT INTO tasks (id, job_id, kind, level, file_start, file_count, status, published_at)
          VALUES ($1, $2, 'GENERATE', 0, 0, 5, 'PUBLISHED', now() - interval '10 minutes')`,

@@ -26,7 +26,7 @@ This document describes **how the system works**: data model, queues, messages, 
 
 | Table | Purpose |
 |---|---|
-| **jobs** | F, C, status, seed, `generated_files`, timestamps, `failure_reason` |
+| **jobs** | `file_count` (F), `values_per_file` (C), status, seed, `generated_files`, timestamps, `failure_reason` |
 | **tasks** | Outbox + history: `GENERATE` or `MERGE`, status, attempt, level, file range or `input_count`, `is_final` |
 | **items** | Merge pool: `INPUT` or `PARTIAL`, `state`, `count`, path, `produced_by`, `reserved_by` |
 | **fleet** | Single row: desired worker count W (1–32) |
@@ -202,9 +202,9 @@ Workers never call Postgres; only the supervisor calls the API for fleet size.
 
 ### 10.1 Job JSON and estimates
 
-- **progress.generation** = `generated_files / f`
+- **progress.generation** = `generated_files / file_count`
 - **progress.reduction** (while reducing): from count of pool **rows** in `READY`/`RESERVED`, not file sum
-- **estimate:** input bytes ≈ f×c; merge task count ≈ ⌈(f−1)/4⌉; peak partial bytes ≈ (merge_tasks−1)×8×c
+- **estimate:** input bytes ≈ file_count×values_per_file; merge task count ≈ ⌈(file_count−1)/4⌉; peak partial bytes ≈ (merge_tasks−1)×8×values_per_file
 - **waiting** (stats/UI): generating, nothing done yet, no worker on this job
 
 ### 10.4 Task graph

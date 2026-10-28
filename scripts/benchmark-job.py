@@ -37,7 +37,7 @@ def count_done_tasks(tasks: dict) -> int:
 def main() -> int:
     print(f"benchmark f={F} c={C} (workers W={W} assumed running)")
     t0 = time.perf_counter()
-    job = post("/jobs", {"f": F, "c": C})
+    job = post("/jobs", {"file_count": F, "values_per_file": C})
     job_id = job["id"]
     for _ in range(3600):
         j = get(f"/jobs/{job_id}")

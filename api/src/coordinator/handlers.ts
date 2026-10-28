@@ -54,7 +54,7 @@ export async function onCompleted(
        WHERE id = $1 RETURNING generated_files`,
       [job.id, task.file_count ?? 0],
     );
-    if (updated && updated.generated_files === job.f) {
+    if (updated && updated.generated_files === job.file_count) {
       await barrier(client, job, result.events);
     }
   } else {
