@@ -62,7 +62,7 @@ Declared in `definitions.json` at broker start (ITD-011). API and workers only *
 
 Task messages: JSON, persistent, `message_id = task_id:attempt`. **No priority field** — order is chosen in SQL (ITD-003).
 
-Broker checks (V-1–V-5): [open-questions.md](open-questions.md).
+Broker assumptions: verified at implementation; re-check with `scripts/verify-rabbitmq.py` after broker upgrades ([open-questions.md](open-questions.md)).
 
 ---
 

@@ -2,44 +2,53 @@
 
 Designed but not built. Each entry says when to build it and how.
 
-## 1. Fair-share dispatcher (Built — ITD-003)
-- Built into the outbox relay (`api/src/relay/index.ts`). Possible next steps: weight rounds by C, and replace the window query with a per-job lateral `LIMIT` if the ITD-002 benchmark shows it is slow.
+## 1. Weighted fair share
 
-## 2. Per-level priority (Obsolete)
-- The dispatcher already runs deeper merges first within a job, without broker priorities.
+**When:** equal tasks per active job is unfair when job sizes differ a lot.
 
-## 3. Coordinator scale-out
-**When:** the benchmark (ITD-002) shows workers waiting on the coordinator, or the single point of failure matters. Options, cheapest first:
-1. **Batch:** up to N messages or 20 ms per transaction, acked with `multiple=true`. On failure, replay one at a time (ITD-002 rules apply).
-2. **Shard by `job_id`:** a consistent-hash exchange in front of K coordinator queues, one coordinator each. Each job is still handled serially by one instance.
-3. **Workers write the DB themselves:** this breaks invariant 1, so it needs a user-approved ITD.
+- Weight round-robin rounds by job size (for example proportional to C) while still preferring deeper merges first within each job.
 
-## 4. Configurable W through the API (Built — ITD-014)
-- Built in `002_fleet.sql`, `api/src/routes/fleet.ts`, `worker/src/dismean_worker/supervisor.py`, and the UI fleet card.
+## 2. Coordinator scale-out
 
-## 5. Faster hang detection
-**When:** about 15 minutes (ITD-005) is too slow.
-1. **Progress watchdog (about 20 lines):** the task thread bumps a counter per file; if it stops moving for N seconds, the process exits. Slow workers aren't killed, because it measures progress rather than time.
-2. **API reaper:** heartbeats carry `{task_id, attempt, progress}`. When they go stale, the reaper republishes with `attempt + 1` and a new token, and completions must match the token. Needed only for untrusted workers or with the dispatcher.
+**When:** the benchmark shows workers waiting on the coordinator, or the single coordinator becomes an availability concern. Options, cheapest first:
 
-## 6. Backup copies of slow tasks
+1. **Batch:** apply up to N completion messages or 20 ms of work per database transaction, then ack in bulk. On failure, replay one message at a time (same error rules as today).
+2. **Shard by job:** route each job’s completions to one of several coordinator consumers so a job is still serialized on one writer.
+3. **Workers write the database:** breaks the “API-only writer” invariant; needs a new accepted ITD.
+
+## 3. Faster hang detection
+
+**When:** the fifteen-minute consumer timeout is too slow.
+
+1. **Progress watchdog:** the worker task thread reports progress per file; if progress stops for N seconds, exit the process. Slow but healthy workers are not killed because the check is stall-based, not wall-clock.
+2. **API reaper:** heartbeats carry task id, attempt, and progress; when they go stale, republish with a new attempt and require matching tokens on completion. Useful mainly for untrusted workers or with backup-task dispatch.
+
+## 4. Backup copies of slow tasks
+
 **When:** stragglers dominate job tails.
-- Condition: the queue is empty, a worker is idle, and a task has been running longer than 2× the median for its kind.
-- Republish one copy with the same `task_id`. The first completion wins (ITD-006). At most one backup per task.
 
-## 7. Object storage
-**When:** going beyond one machine.
-- Swap the storage modules for S3-compatible ones (MinIO locally, S3 or GCS in production). A `PUT` is already atomic. Lifecycle rules replace partial cleanup.
+- When the queue is empty, a worker is idle, and a task has run longer than twice the median for its kind, republish one duplicate with the same task id. The first completion wins. At most one backup per task.
 
-## 8. Disk budget
+## 5. Object storage
+
+**When:** running beyond one machine.
+
+- Swap local file modules for S3-compatible storage (MinIO locally, cloud object storage in production). A single-object put is already atomic. Lifecycle rules replace partial cleanup jobs.
+
+## 6. Disk budget
+
 **When:** full disks become a problem (IPD-002).
-- At `POST /jobs`, estimate `f·c + (M−1)·8c` and return `413` if it exceeds `DISK_BUDGET_BYTES` minus current usage.
 
-## 9. Artificial worker slowdown
+- At job submit, estimate space from F, C, and merge depth; reject with HTTP 413 if the estimate exceeds a configured budget minus current usage.
+
+## 7. Artificial worker slowdown
+
 **When:** a demo needs visible speed differences (IPD-005).
-- A `WORKER_SPEED_FACTOR` per worker, random in [0.5, 3] when unset. Each file sleeps `(50 + C/10,000) ms × factor`, ±20%.
-- The factor is shown in heartbeats and the UI.
 
-## 10. Eager tail merges
+- Optional per-worker speed factor (random in a bounded range when unset), applied as extra sleep per file, exposed in heartbeats and the UI.
+
+## 8. Eager tail merges
+
 **When:** job tails need shortening.
-- Also merge 2–4 ready items when the queue is empty and a worker is idle. Saves up to about one merge per job, at the cost of extra tasks and the coordinator depending on worker state.
+
+- Also merge two to four ready items when the queue is empty and a worker is idle, even if other merges for that job are still open. Saves up to about one merge per job at the cost of extra tasks and tighter coupling to live worker state.

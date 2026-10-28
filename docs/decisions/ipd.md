@@ -27,7 +27,7 @@ Each entry is a small table: **Context** (problem), **Decision** (what we do), *
 | **Context** | Large F and C values can use gigabytes of disk for inputs and partial merges. |
 | **Decision** | Allow any F and C within spec limits. The API and UI show an upfront disk and task estimate before/when running a job. |
 | **Rationale** | The spec allows large jobs; showing an estimate lets the user judge capacity without arbitrary hard blocks on local machines. |
-| **Options considered** | Reject jobs over a fixed disk quota (`413`, future-work §8); cap F×C below the spec maximum. |
+| **Options considered** | Reject jobs over a fixed disk quota (future-work §6); cap F×C below the spec maximum. |
 | **Trade-offs** | Huge jobs can fill the disk until cleanup runs. If the disk fills up, tasks fail and the job ends `FAILED` after retries (ITD-007). |
 
 ### IPD-003: Values are integers 0–100
@@ -60,8 +60,8 @@ Each entry is a small table: **Context** (problem), **Decision** (what we do), *
 | **Context** | The problem statement mentions workers running at different speeds. We had to decide whether to inject fake delays in normal runs. |
 | **Decision** | Workers always run at full speed. There is no built-in sleep or slow-mode toggle in production code. |
 | **Rationale** | Real OS scheduling and batch sizes already vary timing; unit simulations test stragglers directly without slowing every local run and test. |
-| **Options considered** | Per-worker sleep/throttle env var for demos (future-work §9). |
-| **Trade-offs** | Small local jobs finish very fast (~hundreds of ms), so visual speed differences across workers are subtle unless F or C is large. Speed-variance behaviour is verified in `speed-variance.test.ts` (design-doc §9). |
+| **Options considered** | Per-worker sleep or throttle for demos (future-work §7). |
+| **Trade-offs** | Small local jobs finish very fast, so visual speed differences across workers are subtle unless F or C is large. Speed-variance behaviour is covered by automated tests (design-doc §9). |
 
 ### IPD-006: Job task tree in the UI
 

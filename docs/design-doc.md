@@ -69,7 +69,7 @@ a MERGE is final when its input counts add up to F
 ```
 
 - **No fixed tree.** A merge waits for *any* 5 ready items, never for a particular worker. A slow worker delays only the item it holds ([walkthrough](diagrams/reduction-walkthrough.md)).
-- **Strict tail rule.** With fewer than 5 items and merges still open, we wait. This gives the fewest tasks and the simplest rule. Early merging would save at most about one merge at the very end (future-work §10).
+- **Strict tail rule.** With fewer than 5 items and merges still open, we wait. This gives the fewest tasks and the simplest rule. Early merging would save at most about one merge at the very end (future-work §8).
 
 ### 4.4 Deciding when a job is finished
 
@@ -190,7 +190,7 @@ The spec asks for F files workers can read; IPD-001 keeps a clear generation bar
 No. `merge.py` keeps one `int64` accumulator and memory-maps **one** input at a time (`mmap_mode="r"`), adds, then `del` before the next. At most one mapped input plus the accumulator are live.
 
 **Why a single-threaded coordinator instead of workers updating Postgres?**  
-The pool tail rule (`2–4 READY` only when `open_merges = 0`) is a **job-global** predicate. Concurrent writers could each see `open_merges > 0` and skip the final tail merge, hanging the job. `FOR UPDATE` on the job row serializes scheduling safely. Scale-out path: shard `dm.coordinator` by `job_id` (future-work §3); ITD-002 showed batching is not needed yet at F = 20k.
+The pool tail rule (`2–4 READY` only when `open_merges = 0`) is a **job-global** predicate. Concurrent writers could each see `open_merges > 0` and skip the final tail merge, hanging the job. `FOR UPDATE` on the job row serializes scheduling safely. Scale-out path: shard coordinator traffic by job (future-work §2); ITD-002 showed batching is not needed yet at F = 20k.
 
 **What if a task is `PUBLISHED` in Postgres but the broker no longer has the message?**  
 ITD-003: on API startup, if `dm.tasks` has zero ready and zero unacked, reset all `PUBLISHED` on active jobs to `CREATED`. While running, reset stale `PUBLISHED` rows (older than `PUBLISHED_STALE_MS`) when no worker heartbeat reports `BUSY` on that `task_id`. Safe because tasks are deterministic and completions are idempotent (ITD-006).

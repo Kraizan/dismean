@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify RabbitMQ assumptions from docs/open-questions.md (V-1–V-5)."""
+"""Verify RabbitMQ assumptions documented in ITD-003, ITD-005, ITD-007, ITD-011 (see docs/open-questions.md)."""
 import base64
 import json
 import os

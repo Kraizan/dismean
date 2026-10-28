@@ -1,19 +1,13 @@
 # Open questions
 
-Lists only what's waiting for the user, plus what to verify during implementation. Settled questions live in the decision logs.
+Items that need a **user** decision before we change behaviour or product scope. Settled choices live in [ITD](decisions/itd.md) and [IPD](decisions/ipd.md).
 
 ## Waiting for the user
 
 None.
 
-## Verify during implementation
+## Broker assumptions (regression check)
 
-Checked on `rabbitmq:4-management` via `scripts/verify-rabbitmq.py` (2026-10-26).
+RabbitMQ 4.x behaviour used by ITD-003, ITD-005, ITD-007, and ITD-011 was verified at implementation time (consumer timeout on the task queue, delivery limits and dead-lettering, passive queue depth for dispatch, no workable 2:1 priority on quorum queues—fair share is in SQL instead).
 
-| # | Check on the pinned RabbitMQ 4.x image | Needed by | Fallback | Fallback decided by | Status |
-|---|---|---|---|---|---|
-| V-1 | Quorum queues support two priority levels with 2:1 delivery | (historical) | Classic queue with `x-max-priority=2` | **User** | **Closed.** Delivery was strictly high-first, not 2:1. Fair-share dispatch (ITD-003); messages no longer carry priority |
-| V-2 | Per-queue `x-consumer-timeout` argument | ITD-005 | Broker-wide `consumer_timeout` in `rabbitmq.conf` | Agent | **OK** (`900000` on `dm.tasks`) |
-| V-3 | `x-delivery-limit=-1` means unlimited | ITD-011 | A very large limit (1,000,000) | Agent | **Fallback** (`dm.coordinator` uses `1000000`; `-1` not used at import) |
-| V-4 | Quorum queue dead-letters a message once its delivery limit is exceeded | ITD-007 | Worker reads the delivery count and publishes `task.failed` at the limit | Agent | **OK** (DLX + `dm.tasks.dead` present; limit `3`) |
-| V-5 | A passive declare of a quorum queue reports ready messages and live consumers | ITD-003 | Management API queue stats | Agent | **OK**, for confirmed publishes (the relay always waits for confirms before its next check) |
+After upgrading the broker image or changing queue arguments, run `scripts/verify-rabbitmq.py` and update the decision logs if anything changed.

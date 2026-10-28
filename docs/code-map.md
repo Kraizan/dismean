@@ -201,7 +201,7 @@ Onboarding index: every tracked source path → what it does. **System behaviour
 |---|---|---|
 | [scripts/run-api.sh](../scripts/run-api.sh) | API restart loop on crash (ITD-005) | §10 |
 | [scripts/verify-all.sh](../scripts/verify-all.sh) | Full local verification orchestrator | [design-doc § tests](design-doc.md) |
-| [scripts/verify-rabbitmq.py](../scripts/verify-rabbitmq.py) | Topology and V-1–V-5 checks | [open-questions](open-questions.md) |
+| [scripts/verify-rabbitmq.py](../scripts/verify-rabbitmq.py) | Broker assumption regression checks | [open-questions](open-questions.md), ITD-003/005/007/011 |
 | [scripts/e2e.sh](../scripts/e2e.sh) | Wrapper for `e2e.py` | — |
 | [scripts/e2e.py](../scripts/e2e.py) | Happy-path job to bit-exact mean; task-graph + partial CSV | [design-doc](design-doc.md) |
 | [scripts/e2e-matrix.py](../scripts/e2e-matrix.py) | Several F/C sizes | [design-doc](design-doc.md) |
@@ -227,7 +227,7 @@ Onboarding index: every tracked source path → what it does. **System behaviour
 | [docs/decisions/itd.md](decisions/itd.md) | Technical decisions (see active ITD IDs in file intro) |
 | [docs/decisions/ipd.md](decisions/ipd.md) | Product / UX decisions (see active IPD IDs in file intro) |
 | [docs/future-work.md](future-work.md) | Not built yet |
-| [docs/open-questions.md](open-questions.md) | User / verify items |
+| [docs/open-questions.md](open-questions.md) | User decisions; broker regression note |
 | [docs/diagrams/*.md](diagrams/) | Mermaid sequence and state diagrams |
 
 ---

@@ -12,7 +12,7 @@ Read in this order: design doc (why), HLD (what), LLD (how). The decision logs r
 | [decisions/itd.md](decisions/itd.md) | Technical decisions (`ITD-001` – `ITD-014`) |
 | [decisions/ipd.md](decisions/ipd.md) | Product decisions (`IPD-001` – `IPD-006`) |
 | [future-work.md](future-work.md) | Designed but not built |
-| [open-questions.md](open-questions.md) | Waiting for the user / to verify |
+| [open-questions.md](open-questions.md) | Waiting for the user; broker regression note |
 
 | Diagram | Shows |
 |---|---|

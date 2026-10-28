@@ -88,9 +88,9 @@ The API and workers must use the same absolute `DATA_DIR`.
 
 | Local | Production |
 |---|---|
-| API process | Containers behind a load balancer. Routes scale out; the coordinator runs as one leader, or sharded by `job_id` (future-work §3) |
+| API process | Containers behind a load balancer. Routes scale out; the coordinator runs as one leader, or sharded by job (future-work §2) |
 | Postgres / RabbitMQ in Docker | Managed Postgres; Amazon MQ or CloudAMQP with 3-node quorum queues |
-| `DATA_DIR` | S3 or GCS; lifecycle rules replace cleanup (future-work §7) |
+| `DATA_DIR` | S3 or GCS; lifecycle rules replace cleanup (future-work §5) |
 | Supervisor | Kubernetes Deployment or ECS Service, one worker per container. Its memory limit makes the 5-file rule real |
 | `GET/PUT /fleet` + supervisor | `replicas` / `desiredCount` set by the API, or KEDA scaling on the dispatch backlog with the API-set W as min/max bounds |
 | `scripts/run-api.sh` | The orchestrator's restart policy |
