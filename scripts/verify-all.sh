@@ -5,7 +5,12 @@ export DATA_DIR="${DATA_DIR:-$ROOT/data}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://dismean:dismean@localhost:5432/dismean}"
 export AMQP_URL="${AMQP_URL:-amqp://guest:guest@localhost:5672}"
 export API_URL="${API_URL:-http://localhost:3000}"
-PY="${ROOT}/worker/.venv/bin/python"
+if [[ -x "${ROOT}/worker/.venv/bin/python" ]]; then
+  PY="${ROOT}/worker/.venv/bin/python"
+else
+  PY="$(command -v python3 || true)"
+  [[ -n "$PY" ]] || { echo "need worker/.venv or python3 on PATH"; exit 1; }
+fi
 STARTED=()
 
 cleanup() {

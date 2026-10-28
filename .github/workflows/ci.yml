@@ -20,7 +20,10 @@ jobs:
       - name: Install worker deps
         run: |
           cd worker
-          python -m pip install -e ".[dev]"
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - name: Install UI deps
+        run: cd ui && npm ci
       - name: Start infra
         run: docker compose up -d
       - name: Verify all
