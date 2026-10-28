@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart RabbitMQ: the API and workers must exit, come back through their restart loops, and run jobs again (ITD-021, ITD-033)."""
+"""Restart RabbitMQ: the API and workers must exit, come back through their restart loops, and run jobs again (ITD-005)."""
 import json
 import os
 import subprocess

@@ -39,7 +39,7 @@ flowchart TB
 
   FS[(DATA_DIR<br/>inputs / partials / results)]
 
-  UI -->|REST, polls /stats + /events every 1s| R
+  UI -->|REST, polls /stats + /jobs every 1s; task-graph when a job is open| R
   R --> J & T
   R --> ST
   RE -->|round-robin pick of CREATED| T

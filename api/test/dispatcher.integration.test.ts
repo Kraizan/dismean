@@ -8,7 +8,7 @@ import { selectTasksForDispatch } from "../src/relay/index.js";
 
 const runIntegration = process.env.DISMEAN_INTEGRATION === "1";
 
-describe.runIf(runIntegration)("fair-share dispatch order (ITD-034)", () => {
+describe.runIf(runIntegration)("fair-share dispatch order (ITD-003)", () => {
   let pool: pg.Pool;
 
   beforeAll(async () => {

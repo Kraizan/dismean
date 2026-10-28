@@ -23,7 +23,7 @@ Spec: [`docs/problem-statement.md`](docs/problem-statement.md). Doc index: [`doc
 Code and docs must agree.
 1. **Read first.** Before changing code, read the relevant parts of the HLD, LLD and decision logs.
 2. **Same change.** Any change to behaviour, schema, messages, endpoints, config or topology updates the affected docs and diagrams in the same change.
-3. **Decisions are never deleted.** To change one, add a new entry and mark the old one `Superseded by …` (it may be shortened to a stub).
+3. **Superseded decisions** may be removed from `itd.md` / `ipd.md` once the replacement entry documents the outcome. Git history keeps old text. To change behaviour, add or update an **Accepted** entry (do not delete active decisions).
 4. **ITD vs IPD.** How the system works goes in an ITD (`docs/decisions/itd.md`). What the user gets or sees goes in an IPD (`docs/decisions/ipd.md`).
 5. **Future work** lives only in `docs/future-work.md`. No TODO-comment roadmaps.
 6. **Diagrams** are Mermaid inside Markdown under `docs/diagrams/`.
@@ -52,31 +52,36 @@ When unsure, ask. Never hide an important change inside a minor one.
 - `Proposed`: waiting for the user, and also listed in `docs/open-questions.md`.
 - `Superseded`, `Deferred`.
 
-Entry template:
+Entry template (see `docs/decisions/itd.md` / `ipd.md`):
 
 ```markdown
 ### ITD-NNN: Title
-**Status:** Accepted · **Date:** YYYY-MM-DD
-- **Decision:** what we chose
-- **Why:** the problem, and the alternatives rejected
-- **Consequences:** costs, follow-ups
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** YYYY-MM-DD |
+| **Context** | problem or constraint that forced a choice |
+| **Decision** | what we chose (plain language; keep IDs and enum names where needed) |
+| **Rationale** | why, in simple terms |
+| **Options considered** | alternatives we did not pick |
+| **Trade-offs** | costs, limits, and follow-ups |
 ```
 
 ## Invariants (changing one needs a user-approved ITD)
 
-1. **Workers never touch Postgres.** The API is the only DB writer (ITD-004).
-2. **One coordinator** applies task results: one message at a time, one transaction, ack after commit (ITD-004).
-3. **Tasks are published only by the outbox relay**, from rows with `status='CREATED'` (ITD-005).
-4. **≤5 files per task.** GENERATE writes ≤5; MERGE reads ≤5 items (ITD-006, ITD-007).
-5. **Each task counts once.** A completion applies only `WHERE status IN ('CREATED','PUBLISHED')` (ITD-009).
-6. **Outputs are deterministic and atomic.** Generation is seeded by `(jobs.seed, file_index)`; every write goes to a temp file, then a rename (ITD-009, ITD-026).
+1. **Workers never touch Postgres.** The API is the only DB writer (ITD-002).
+2. **One coordinator** applies task results: one message at a time, one transaction, ack after commit (ITD-002).
+3. **Tasks are published only by the outbox relay**, from rows with `status='CREATED'` (ITD-003).
+4. **≤5 files per task.** GENERATE writes ≤5; MERGE reads ≤5 items (ITD-004).
+5. **Each task counts once.** A completion applies only `WHERE status IN ('CREATED','PUBLISHED')` (ITD-006).
+6. **Outputs are deterministic and atomic.** Generation is seeded by `(jobs.seed, file_index)`; every write goes to a temp file, then a rename (ITD-006).
 7. **Generation finishes before reduction starts** (IPD-001).
-8. **Exact arithmetic:** `uint8` inputs, `int64` sums, one float division at the end (ITD-011).
-9. **Heartbeats are display-only.** Worker state and events live in API memory (ITD-008, ITD-024).
-10. **Only `api/src/paths.ts` builds file paths.** Workers use the paths in their message; the coordinator ignores paths from workers (ITD-028).
-11. **Fair-share dispatch:** the relay fills only free queue slots, round-robin across active jobs, deepest MERGE first within a job. Messages carry no priority (ITD-034).
-12. **Topology lives only in `definitions.json`.** Code only checks that it exists (ITD-023).
-13. **No job hangs.** A coordinator error either waits out a DB outage, fails the job, or exits the API so the restart loop redelivers the message (ITD-022, ITD-033).
+8. **Exact arithmetic:** `uint8` inputs, `int64` sums, one float division at the end (ITD-008).
+9. **Heartbeats are display-only.** Worker state and events live in API memory (ITD-005, ITD-012).
+10. **Only `api/src/paths.ts` builds file paths.** Workers use the paths in their message; the coordinator ignores paths from workers (ITD-008).
+11. **Fair-share dispatch:** the relay fills only free queue slots, round-robin across active jobs, deepest MERGE first within a job. Messages carry no priority (ITD-003).
+12. **Topology lives only in `definitions.json`.** Code only checks that it exists (ITD-011).
+13. **No job hangs.** A coordinator error either waits out a DB outage, fails the job, or exits the API so the restart loop redelivers the message (ITD-002, ITD-005).
 
 ## Conventions
 
@@ -84,9 +89,9 @@ Entry template:
 - Match surrounding style. Comments only for constraints the code can't show.
 - TypeScript in `strict` mode. Validate HTTP and queue input with zod at the boundary.
 - Python: type hints, NumPy for array work, no per-element loops.
-- Workers: task work runs off the AMQP thread. Any broker error after startup means `exit(1)`; the supervisor restarts the worker (ITD-021).
+- Workers: task work runs off the AMQP thread. Any broker error after startup means `exit(1)`; the supervisor restarts the worker (ITD-005).
 - Config comes from the env vars in LLD §13. No hard-coded URLs or paths.
-- Message changes bump `schema_version` and update LLD §4, `contracts/examples/`, and both parsers (ITD-025).
+- Message changes bump `schema_version` and update LLD §4, `contracts/examples/`, and both parsers (ITD-013).
 - Keep it simple: no new component, table, queue or dependency without an ITD explaining why the existing pieces can't do the job.
 
 ## Commands
@@ -95,7 +100,7 @@ Entry template:
 docker compose up -d
 export DATA_DIR="$(pwd)/data"   # absolute path required
 
-cd api && npm install && cd .. && ./scripts/run-api.sh   # restart loop (ITD-033); `npm run dev` hot-reloads but never restarts
+cd api && npm install && cd .. && ./scripts/run-api.sh   # restart loop (ITD-005); `npm run dev` hot-reloads but never restarts
 cd worker && python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 python -m dismean_worker.supervisor
 

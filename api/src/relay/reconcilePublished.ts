@@ -4,7 +4,7 @@ import { pushEvent } from "../events.js";
 import { getTasksQueueDepth } from "../mq/queueStats.js";
 import { isTaskBusyOnWorkers } from "../stats/workers.js";
 
-/** Reset orphaned PUBLISHED rows so the outbox can republish (ITD-037). */
+/** Reset orphaned PUBLISHED rows so the outbox can republish (ITD-003). */
 export async function reconcileStalePublished(
   pool: pg.Pool,
   config: Config,

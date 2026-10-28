@@ -17,7 +17,7 @@ let closing = false;
 
 function exitOnBrokerLoss(what: string, err?: unknown): void {
   if (closing) return;
-  // Same rule as workers (ITD-021): no in-process reconnect; the restart loop brings the API back (ITD-033).
+  // Same rule as workers: no in-process reconnect; the restart loop brings the API back (ITD-005).
   console.error(`amqp ${what}; exiting so the restart loop reconnects`, err ?? "");
   process.exit(1);
 }

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 /**
- * Discrete-event simulation of the reduction phase (design doc §9, IPD-009).
+ * Discrete-event simulation of the reduction phase (design doc §9, IPD-005).
  * W workers with different speeds take merge tasks FIFO; a merge of k items costs k / speed.
- * Dynamic pool = ITD-006 (any 5 ready items, strict tail). Static = fixed 5-ary tree.
+ * Dynamic pool = ITD-004 (any 5 ready items, strict tail). Static = fixed 5-ary tree.
  */
 
 interface Merge {

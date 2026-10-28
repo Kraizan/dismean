@@ -518,7 +518,7 @@ export function JobTaskTree({
             <div className="task-lineage">
               {selected.parent_task_ids.length > 0 && (
                 <div>
-                  <span className="kpi-label">Parent tasks</span>
+                  <span className="kpi-label">Upstream tasks</span>
                   <div className="chip-row">
                     {selected.parent_task_ids.map((id) => (
                       <button
@@ -535,7 +535,7 @@ export function JobTaskTree({
               )}
               {childrenOfSelected.length > 0 && (
                 <div>
-                  <span className="kpi-label">Child tasks</span>
+                  <span className="kpi-label">Downstream tasks</span>
                   <div className="chip-row">
                     {childrenOfSelected.map((id) => (
                       <button

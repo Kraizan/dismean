@@ -16,7 +16,7 @@ docker compose up -d
 
 export DATA_DIR="$(pwd)/data"   # absolute path
 
-# API (restarts itself if it loses RabbitMQ; see ITD-033)
+# API (restarts itself if it loses RabbitMQ; see ITD-005)
 (cd api && npm install) && ./scripts/run-api.sh
 
 # Workers (another terminal)
@@ -24,7 +24,7 @@ cd worker && python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python -m dismean_worker.supervisor
 
-# UI (ops dashboard)
+# UI (jobs + modal task DAG; see IPD-006)
 cd ui && npm install && npm run dev   # http://localhost:5173 → proxies /api to :3000
 ```
 
@@ -32,7 +32,7 @@ cd ui && npm install && npm run dev   # http://localhost:5173 → proxies /api t
 
 ```bash
 ./scripts/verify-all.sh   # docker, all tests, e2e, fairness, chaos, broker restart
-RUN_BENCHMARK=1 BENCHMARK_F=20000 ./scripts/verify-all.sh   # optional ITD-027 benchmark
+RUN_BENCHMARK=1 BENCHMARK_F=20000 ./scripts/verify-all.sh   # optional ITD-002 benchmark
 ```
 
 Or manually:

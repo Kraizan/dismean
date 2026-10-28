@@ -28,7 +28,7 @@ interface ItemInput {
 type DispatchRow = TaskRow & { c: number; seed: string };
 
 /**
- * Fair-share order (ITD-034): one task per active job per round, rotating the starting job
+ * Fair-share order (ITD-003): one task per active job per round, rotating the starting job
  * from the cursor; within a job, deepest MERGE first, then other MERGEs, then GENERATE.
  */
 export async function selectTasksForDispatch(
@@ -108,7 +108,7 @@ function buildTaskMessage(row: DispatchRow, inputs: ItemInput[]): TaskMessage {
   };
 }
 
-/** Free slots in dm.tasks: about `factor` queued tasks per consuming worker (ITD-034). */
+/** Free slots in dm.tasks: about `factor` queued tasks per consuming worker (ITD-003). */
 export async function dispatchBudget(
   ch: ConfirmChannel,
   config: Config,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the API and restarts it when it exits non-zero, e.g. after losing RabbitMQ (ITD-033).
+# Runs the API and restarts it when it exits non-zero, e.g. after losing RabbitMQ (ITD-005).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export DATA_DIR="${DATA_DIR:-$ROOT/data}"

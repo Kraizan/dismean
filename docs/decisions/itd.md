@@ -1,261 +1,163 @@
 # Important Technical Decisions (ITD)
 
-Entries are never deleted; a superseded entry is kept as a stub. Statuses and decision authority are defined in [`AGENTS.md`](../../AGENTS.md#decision-authority).
+How the system is built. Only **current** decisions are listed (see [`AGENTS.md`](../../AGENTS.md#decision-authority) for statuses). Related micro-decisions were merged into the 14 pillars below; git history keeps earlier text.
 
-### ITD-001: TypeScript API, Python workers
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** API in Node/Express/TypeScript; workers and supervisor in Python.
-- **Why:** required by the spec. NumPy suits the numeric work. TypeScript everywhere was rejected.
-- **Consequences:** types can't be shared across the two languages, so contracts are example files tested on both sides (ITD-025).
+**Active ITD IDs:** `ITD-001` – `ITD-014`.
 
-### ITD-002: RabbitMQ queue, Postgres state
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** RabbitMQ (with management plugin) for the queue; Postgres for job and task state.
-- **Why:** acks, redelivery, quorum queues, dead-lettering and a stats API, all built in. Rejected: a Postgres-only queue (not a distinct queue component) and Redis Streams (atomicity needs Lua).
-- **Consequences:** two stores mean a dual-write problem, solved by ITD-005.
+Each entry is a small table: **Context** (problem), **Decision** (what we chose), **Rationale** (why), **Options considered** (alternatives we skipped), and **Trade-offs** (costs and follow-ups).
 
-### ITD-003: Plain FIFO task queue
-**Status:** Superseded by ITD-020 · **Date:** 2026-10-23
-- One FIFO queue for every task. Replaced because a job's late merges were stuck behind later jobs' work.
+---
 
-### ITD-004: The API coordinator is the only DB writer
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** workers publish `task.completed` / `task.failed`. One coordinator in the API applies each message in one transaction (locking the job row) and acks after commit. Workers use only RabbitMQ and the filesystem.
-- **Why:** a single writer means no races, and workers stay trivial. Rejected: workers updating the DB themselves.
-- **Consequences:** a throughput ceiling (ITD-027) and a single point of failure, which is restart-safe because state is in Postgres and unacked messages are redelivered. Scale-out: future-work §3.
+### ITD-001: RabbitMQ, Postgres, shared `DATA_DIR`, and Docker Compose
 
-### ITD-005: Transactional outbox
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** tasks are inserted as `CREATED` in the transaction that decides them. The relay publishes them on a confirm channel, then marks them `PUBLISHED`. It is signalled right after each commit and also polls as a fallback.
-- **Why:** a crash between commit and publish would otherwise lose the task. Rejected: publish-then-sweep.
-- **Consequences:** at-least-once delivery, so ITD-009 is required.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | The system needs reliable task queuing with retries/timeouts, ACID state for jobs and the merge pool, shared file storage for arrays, and a reproducible local setup. |
+| **Decision** | Run RabbitMQ 4 (task queue, events, heartbeats, control broadcast) and Postgres 16 (`jobs`, `tasks`, `items`, `fleet`) in `docker-compose.yml` with healthchecks. Run the API, Python supervisor/workers, and Vite UI on the host sharing one local `DATA_DIR` directory (absolute path). |
+| **Rationale** | RabbitMQ gives per-message acks, `prefetch=1`, delivery limits, dead-lettering, and consumer timeouts out of the box; Postgres gives transactional scheduling and an outbox; a shared local folder plus Docker Compose for backing stores keeps local development fast and one-command simple. |
+| **Options considered** | Postgres-only queue; Redis Streams; S3/MinIO object storage in Docker (future-work §7); containerizing API, workers, and UI too. |
+| **Trade-offs** | Two stateful stores must stay in sync via the transactional outbox (ITD-003), local `DATA_DIR` ties the API and workers to one machine or shared mount, and developers need Docker + Node + Python installed locally. |
 
-### ITD-006: Dynamic pool merge, fan-in 5, strict tail rule
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - Each job has a pool of `READY` items (inputs have count 1; partials count n).
-  - Any 5 ready items become a MERGE.
-  - The last 2–4 are merged only once no MERGE is open.
-  - A merge whose input counts add up to F is final.
-- **Why:** a merge never waits on a specific worker. Rejected: a static tree (slow workers block their parents), sticky accumulators (hard to recover), eager tail merges (more tasks).
-- **Consequences:** M ≈ ⌈(F−1)/4⌉ merges; depth ≈ ⌈log₅ F⌉; exact completion detection.
+### ITD-002: Single API coordinator, error classification, and benchmark gate
 
-### ITD-007: GENERATE tasks of 5 files, with an atomic barrier
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - A job starts with ⌈F/5⌉ GENERATE tasks.
-  - Completions add to `jobs.generated_files`.
-  - The completion that reaches F does all of this in one transaction: seed the pool, create the leaf merges, set `REDUCING`.
-- **Why:** parallel generation in the same task model as merging. Rejected: the API generating files (a bottleneck), 1-file tasks (F messages), size-based batches.
-- **Consequences:** an exact barrier. Idle time is at most one GENERATE task, and other jobs fill it (ITD-034).
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Many workers finish in parallel. Updating `generated_files`, firing the generation barrier, and reserving merge-pool items must never race or leave a job hung on an error. |
+| **Decision** | Workers never touch Postgres; they only publish `task.completed` or `task.failed` on RabbitMQ. A single coordinator in the API consumes `dm.coordinator` and `dm.tasks.dead` one message at a time, applies state in one Postgres transaction (`FOR UPDATE` on the job row), and acks only after commit. On errors: (1) bad JSON/schema → log and `ack`; (2) Postgres unavailable → rollback, keep message unacked, retry with backoff; (3) unexpected code/SQL bug → rollback, mark job `FAILED` (`internal error`), `ack` (if marking `FAILED` fails, `exit(1)` so `run-api.sh` restarts and redelivers). Keep one-message-per-tx until `scripts/benchmark-job.py` (`F = 20,000, C = 10, W = 8`) shows a bottleneck. |
+| **Rationale** | Serializing state transitions through one writer eliminates pool-scheduling races (especially the global `open_merges = 0` tail rule), keeps workers stateless, guarantees no coordinator error can silently hang a job, and avoids premature batching/sharding complexity. |
+| **Options considered** | Workers writing Postgres directly; multiple concurrent coordinators; unmonitored coordinator DLQ on bugs; upfront multi-message transaction batching. |
+| **Trade-offs** | One coordinator caps completion rate (~91 completions/s measured at F = 20k on 2026-10-26—well above local needs) and pauses updates briefly during an API restart or DB outage. Scale-out path: batch or shard by `job_id` (future-work §3). |
 
-### ITD-008: Liveness via RabbitMQ acks and consumer timeout
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - Manual ack after the result is confirmed, `prefetch=1`, AMQP heartbeat 10 s.
-  - `x-consumer-timeout` of 15 min is the only hang detector.
-  - Task work runs on its own thread so pika keeps heartbeating.
-  - `worker.heartbeat` every 2 s is for display only.
-- **Why:** time-based leases punish slow workers, and the broker already handles crashes. Rejected for now: a progress watchdog and an API reaper (future-work §5).
-- **Consequences:** almost no code; a stuck worker is found after about 15 min. Relies on ITD-009.
+### ITD-003: Transactional outbox, fair-share dispatch, and orphan reconciliation
 
-### ITD-009: Idempotency
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  1. GENERATE seeds by `(jobs.seed, file_index)`; MERGE is deterministic anyway.
-  2. Every write goes to a temp file, then `os.replace`.
-  3. A completion applies only `WHERE id=$1 AND status IN ('CREATED','PUBLISHED')`. `CREATED` is included because a completion can arrive before the relay marks the task `PUBLISHED`; the relay's update is guarded `WHERE status='CREATED'`, so it never overwrites `DONE`. A completion from any attempt counts, and a failure counts only if its attempt is current.
-- **Why:** redelivery and the outbox both cause duplicates, and double-counting would corrupt the mean. Rejected: attempt tokens (needed only with a reaper).
-- **Consequences:** duplicates are harmless, and jobs are reproducible for tests.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Writing tasks to Postgres and publishing to RabbitMQ must be crash-safe. Dumping thousands of tasks into RabbitMQ at once starves small jobs behind huge ones (FIFO), while RabbitMQ 4 quorum message priority starved other jobs’ `GENERATE` tasks whenever one job was `REDUCING`. Also, if a broker reset loses a message already marked `PUBLISHED`, that job would wait forever. |
+| **Decision** | Save new tasks in Postgres as `CREATED` inside the scheduling transaction. The outbox relay wakes on coordinator signals and every 200 ms: it passive-declares `dm.tasks` (`checkQueue`) and publishes only enough `CREATED` tasks (with confirms, then sets `PUBLISHED`) to keep ~`2 × consumers` ready messages queued. It picks one task per active job in round-robin order (`lastJobId` cursor) and, within each job, prefers `MERGE` over `GENERATE` (`(kind = 'MERGE') DESC, level DESC, created_at, id`), with no AMQP priority field. To self-heal lost messages (`reconcilePublished.ts`), reset `PUBLISHED` → `CREATED` on API startup if `dm.tasks` has 0 ready and 0 unacked messages (via management API), or periodically when a `PUBLISHED` row is older than `PUBLISHED_STALE_MS` (2 min), `unacked = 0`, and no live worker heartbeat reports `BUSY` on that `task_id`. |
+| **Rationale** | Keeping the backlog in Postgres makes task creation atomic with DB state, lets SQL re-order work on every tick so N active jobs share workers ~W/N while each job finishes its deepest merges first, and automatically recovers orphaned `PUBLISHED` rows. |
+| **Options considered** | Publishing directly to RabbitMQ without an outbox; unbounded FIFO queue publish; RabbitMQ `x-max-priority` queues (rejected in V-1); manual SQL repair for stuck `PUBLISHED` tasks. |
+| **Trade-offs** | Relay runs a window query + queue check every 200 ms, fairness is equal-tasks-per-job rather than weighted by `C` (future-work §1), and a task can occasionally be published twice after a crash or delayed heartbeat—safe because tasks and completions are idempotent (ITD-006). |
 
-### ITD-010: Retries and poison messages
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - **Task error:** the worker publishes `task.failed`. Under 3 attempts, the coordinator resets the task to `CREATED` with `attempt + 1`; at 3, the job fails.
-  - **Crash loop:** quorum `x-delivery-limit=3` dead-letters the message to `dm.tasks.dead`, and the coordinator fails the job.
-- **Why:** bounded retries with a clear failure reason. Rejected: fail fast; a limit set per job.
-- **Consequences:** the worst case is 3 × 4 runs of one task. Acceptable.
+### ITD-004: 5-file GENERATE barrier and dynamic pool reduction
 
-### ITD-011: File formats and data types
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - Inputs `.npy uint8`.
-  - Partials `.npy int64`, with the count kept in the DB.
-  - Result `result.csv` (one line, `%.8f`) plus `result.npy` (`float64`).
-  - The only float operation is `sum / F`.
-- **Why:** values are 0–100, so `uint8` is 4× smaller than float32, and sums are exact (max ≈ 10⁷). Rejected: float inputs, CSV inputs, `.npz`.
-- **Consequences:** switching to float values would need a new ITD.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Each worker task may touch at most 5 files, all F inputs must exist before merging starts (IPD-001), and reduction must never wait on a specific slow worker or need an extra pass to know when the job is done. |
+| **Decision** | `POST /jobs` inserts the job (`GENERATING`) and ⌈F/5⌉ `GENERATE` tasks (1–5 files each) in one statement. Each completion increments `generated_files`; when it hits F, the coordinator in one transaction flips the job to `REDUCING`, seeds all F `INPUT` rows (`count = 1`, `READY`) into `items`, and schedules leaf merges. During `REDUCING`, whenever ≥5 items are `READY`, reserve 5 (`FIFO` by `created_at, id`) into a `MERGE` task (`PARTIAL` output `count` = sum of input counts). When 2–4 items are `READY`, merge them only if `open_merges = 0` for that job. While `REDUCING`, `SUM(count)` across `READY + RESERVED` items always equals F, so the merge whose inputs sum to F is flagged `is_final`: its worker divides the `int64` sum by F and writes `result.npy` and `result.csv`. |
+| **Rationale** | Batching 5 files per `GENERATE` cuts task overhead 5×; any fast worker can merge any 5 ready items from the pool (no static tree stragglers); the strict tail rule minimizes total merges to ⌈(F−1)/4⌉; and `sum(count) == F` detects the final merge immediately with no separate finalize task. |
+| **Options considered** | 1 file per `GENERATE` task; static 5-ary merge tree; per-worker partial accumulators; eagerly merging 2–4 tail items while other merges are still in flight; separate finalize task. |
+| **Trade-offs** | Up to 5 input files retry together if a `GENERATE` task fails, and the final 2–4 tail items wait briefly for in-flight merges of the same job to finish before the last merge is scheduled. |
 
-### ITD-012: Shared local filesystem
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:** one `DATA_DIR` shared by the API and workers (layout in LLD §11).
-- **Why:** zero setup on one machine. MinIO stays an option (future-work §7).
-- **Consequences:** file access sits behind small storage modules, so it's swappable.
+### ITD-005: AMQP liveness and crash-only recovery (workers and API)
 
-### ITD-013: Cancel by broadcast; coordinator ignores late results
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - Stopping a job (cancel or failure) marks the job and its open tasks.
-  - After commit, the stopper publishes `job.stopped` on `dm.control`.
-  - Workers ack-and-skip tasks of stopped jobs.
-  - The coordinator ignores results for inactive jobs.
-- **Why:** without it, workers would churn through a cancelled job's queued tasks. Rejected: the coordinator ignoring results alone.
-- **Consequences:** the broadcast is best-effort. Missing it wastes some work but never breaks correctness.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Workers or the API can crash, hang mid-task, or lose their RabbitMQ connection when the broker restarts. Half-broken AMQP channels or zombie threads would stall jobs. |
+| **Decision** | Workers use `prefetch=1`, manual ack after result publish, 10 s AMQP heartbeats, `x-consumer-timeout = 15 min` on `dm.tasks`, and run CPU/disk work on a background thread (`worker.heartbeat` every 2 s is UI-only). After startup, any AMQP connection/channel error in a worker calls `sys.exit(1)` and the supervisor spawns a fresh process. Likewise, on any fatal AMQP error after startup, the API calls `process.exit(1)`, `/health` returns `503` while disconnected, and `scripts/run-api.sh` restarts the API with backoff. |
+| **Rationale** | RabbitMQ automatically requeues unacked tasks on TCP drop (~10–20 s) or consumer timeout (15 min), and exiting the whole process on broker errors cleanly kills stuck threads and rebuilds all consumers and channels from scratch on restart. |
+| **Options considered** | Custom Postgres task leases and reaper daemon; in-process AMQP reconnect/re-subscribe state machines in Python and Node. |
+| **Trade-offs** | A hung worker thread that keeps its socket alive takes up to 15 min to time out (faster watchdog in future-work §5), broker blips cause a ~1–2 s API restart (resetting in-memory events), and production/e2e runs must launch the API via `scripts/run-api.sh` rather than `npm run dev`. |
 
-### ITD-014: Cleanup runs in the API
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** a sweep every 10 min and on `POST /cleanup` deletes the partials of jobs that finished more than `PARTIAL_RETENTION_MS` ago.
-- **Why:** it's just file deletes and DB updates, so it doesn't need the queue. Rejected: a CLEANUP task type.
-- **Consequences:** the API needs `DATA_DIR` access, which it already has for downloads.
+### ITD-006: Idempotency, deterministic seeds, and atomic file writes
 
-### ITD-015: Python supervisor with fixed W
-**Status:** Superseded by ITD-032 · **Date:** 2026-10-23
-- The supervisor starts `WORKER_COUNT` workers, restarts any that exit non-zero, and forwards SIGTERM, then waits for them to drain. Replaced by API-configurable W (`GET/PUT /fleet`).
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | At-least-once delivery means tasks can execute more than once, and a worker crash mid-write must never leave a half-written file on disk. |
+| **Decision** | Seed every input file deterministically from `(jobs.seed, file_index)` using `numpy.random.SeedSequence`. Write every `.npy` and `.csv` file to `<target>.tmp-<uuid>` in the same directory and `os.replace` onto the final path (no per-file `fsync`). In the coordinator, apply `task.completed` only `WHERE status IN ('CREATED', 'PUBLISHED')`, and apply `task.failed` only when `attempt` matches the DB row. |
+| **Rationale** | Re-running a `GENERATE` or `MERGE` task writes identical bytes atomically so readers never see partial files, skipping `fsync` keeps local disk I/O fast across thousands of files, and the SQL status guard makes duplicate completions a safe no-op. |
+| **Options considered** | Per-attempt fencing tokens on file paths; writing directly to final paths; calling `fsync` on every file write. |
+| **Trade-offs** | Redelivered tasks occasionally repeat disk work, leftover `.tmp-*` files from hard kills sit until cleanup/delete, and skipping `fsync` targets process crashes rather than host power loss. |
 
-### ITD-016: Infrastructure via Docker Compose
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:** `postgres:16` and `rabbitmq:4-management` in Docker; the API, workers and UI run natively.
-- **Consequences:** one command starts the infrastructure.
+### ITD-007: Task retries and dead-letter poison handling
 
-### ITD-017: Libraries
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:**
-  - API: express, pg, amqplib, zod, vitest, npm, plain SQL migrations.
-  - Worker: pika, numpy, pytest; installed with pip into a venv.
-  - UI tests: vitest (ITD-036).
-- **Why:** mainstream and free. Rejected: aio-pika (the compute still needs a thread), an ORM (3 tables).
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Tasks can fail from transient glitches, deterministic code/data errors, or repeated hard crashes (e.g. OOM/SIGKILL before Python can send `task.failed`). |
+| **Decision** | Caught worker errors publish `task.failed` and ack; the coordinator increments `attempt` and resets the task to `CREATED` (keeping any reserved pool items attached to that `task.id` for the retry) up to `MAX_ATTEMPTS = 3`, then marks the job `FAILED` with `failure_reason` in the API and UI. Uncaught worker crash loops hit `dm.tasks` quorum `x-delivery-limit = 3`, dead-letter to `dm.tasks.dead`, and the coordinator fails the job. |
+| **Rationale** | Handles both caught exceptions and hard process crashes, gives transient errors 3 attempts, and guarantees poison tasks always terminate the job with a clear reason. |
+| **Options considered** | Failing the job on the first task error; unlimited retries; manual inspection of a dead-letter queue without failing the job. |
+| **Trade-offs** | A deterministic error runs up to 3 times before failing the job, and a single unrecoverable task fails the whole job. |
 
-### ITD-018: The final merge writes the mean
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:** the final MERGE carries `final=true` and `total_count=F`. The worker divides and writes both result files.
-- **Why:** no extra FINALIZE task or hop, and the API does no numeric work.
+### ITD-008: Exact arithmetic, file formats, and single path builder
 
-### ITD-019: Stats in DB tables, pushed over SSE
-**Status:** Superseded by ITD-024 · **Date:** 2026-10-23
-- `workers` and `events` tables, plus an SSE stream. Replaced by in-memory state and polling.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Repeated float additions lose precision, text parsing slows down intermediate merges, and file paths must never drift between TypeScript, SQL, and Python or trust worker input. |
+| **Decision** | Store inputs as `.npy` `uint8[C]` (values 0–100), partials as `.npy` `int64[C]`, and final output as `result.npy` (`float64[C]`) + `result.csv` (`%.8f`, one line), dividing by F only once in the final merge. Stream any input or partial `.npy` as CSV on demand from the API. Build all paths under `DATA_DIR` exclusively in `api/src/paths.ts`; pass target paths in task messages and ignore paths in worker completion messages. |
+| **Rationale** | `uint8` inputs are 1 byte/value, `int64` partial sums are exact and cannot overflow (`100 × 99,999 ≪ 2^63 − 1`), binary `.npy` loads directly into NumPy, and centralizing paths in `paths.ts` prevents path bugs and untrusted path injection. |
+| **Options considered** | `float64` or CSV for intermediate partials; building paths separately in Python and TypeScript; letting workers report output paths in `task.completed`. |
+| **Trade-offs** | `int64` partials are 8 bytes/value on disk until cleanup runs, task messages carry explicit file path lists, and `paths.test.ts` must keep `paths.ts` and barrier SQL path formatting locked together. |
 
-### ITD-020: Two priority levels: MERGE high, GENERATE normal
-**Status:** Superseded by ITD-034 · **Date:** 2026-10-25 · **Supersedes:** ITD-003
-- MERGE at priority 9, GENERATE at 0 on one quorum queue, assuming 2:1 delivery. Tested on `rabbitmq:4-management` (2026-10-26), the queue delivered every high-priority message before any normal one, so a reducing job blocked every other job's generation. Replaced by fair-share dispatch.
+### ITD-009: Cancel broadcast and ignoring late results
 
-### ITD-021: Workers exit on any broker error
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:** after startup, any channel or connection error means log and `exit(1)`; the supervisor restarts the worker. Only the initial connect retries.
-- **Why:** when the consumer timeout fires, the broker closes the channel but a stuck thread keeps running. Exiting kills it. Rejected: reconnecting in-process.
-- **Consequences:** one recovery path for every broker problem.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | When a job is cancelled or fails, tasks for that job may already be queued in RabbitMQ or running on workers. |
+| **Decision** | Mark the job and its open tasks terminal (`CANCELLED` or `FAILED`) in Postgres, then fanout `job.stopped` on `dm.control`. Workers cache stopped `job_id`s in memory and immediately ack/skip queued tasks for those jobs. The coordinator drops any late `task.completed` / `task.failed` messages for non-active jobs (`ignored_inactive_job`). |
+| **Rationale** | Postgres is the authority for correctness (late results cannot mutate a stopped job), while the fanout broadcast drains queued tasks in milliseconds without scanning or purging the shared broker queue. |
+| **Options considered** | Coordinator-only ignore without broadcast (workers waste CPU finishing queued tasks); selective broker queue purge. |
+| **Trade-offs** | Broadcast is best-effort: a task already mid-execution on a worker thread finishes its current batch before its result is ignored, and newly spawned workers only receive future broadcasts. |
 
-### ITD-022: Coordinator error handling
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:**
-  - **DB unavailable:** roll back, keep the message unacked, retry it with backoff.
-  - **Any other exception:** roll back, then fail the job ("internal error: …") in a new transaction, and ack.
-  - **Invalid message:** log and ack.
-- **Why:** the earlier coordinator dead-letter queue had no reader, so a bug hung the job forever.
-- **Consequences:** jobs never hang, and two topology objects are gone.
+### ITD-010: Partial file retention and API cleanup
 
-### ITD-023: Topology from a definitions file
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:** `infra/rabbitmq/definitions.json` declares every exchange, queue, binding and argument, loaded at broker start. Code only does passive declares. Per-worker control queues are the only runtime objects.
-- **Why:** no startup race, and no argument mismatches between the API and workers.
-- **Consequences:** topology changes edit that file and LLD §3 together.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | `int64` partial `.npy` files use most of the disk space during a job, are needed briefly after completion for task-graph CSV inspection, and should be reclaimed afterwards. |
+| **Decision** | Every 10 minutes (`CLEANUP_INTERVAL_MS`) and on `POST /cleanup`, the API deletes partial `.npy` files for terminal jobs finished longer than `PARTIAL_RETENTION_MS` (default 1 hour; `?force=true` uses 0 s), marks those `items` `DELETED`, and sets `jobs.partials_cleaned_at`. Input files and `result.csv` / `result.npy` stay until `DELETE /jobs/:id`. |
+| **Rationale** | Runs in the API process that already owns DB state and `DATA_DIR` access, reclaims the bulky intermediate files automatically, and preserves a 1-hour debugging window for partial CSV downloads. |
+| **Options considered** | Deleting partials immediately on job completion; dispatching cleanup tasks to Python workers. |
+| **Trade-offs** | Peak disk space remains allocated for up to 1 hour after a job finishes unless `POST /cleanup?force=true` (or the UI cleanup button) is used; once cleaned, partial CSV endpoints return `409 Gone`. |
 
-### ITD-024: Observability in memory; the UI polls
-**Status:** Accepted · **Date:** 2026-10-25 · **Supersedes:** ITD-019
-- **Decision:**
-  - An in-memory worker list from heartbeats, with stale (`WORKER_STALE_MS`) and prune (`WORKER_PRUNE_MS`) ages.
-  - An event ring buffer (`EVENT_BUFFER_SIZE`), also logged to stdout.
-  - Queue depth from the management API; counts from SQL.
-  - The UI polls `/stats` and `/events` every second.
-  - A job is "waiting" when it's GENERATING with nothing done and no busy worker on it.
-- **Why:** this is display-only data. Tables and SSE cost more than they're worth.
-- **Consequences:** two fewer tables. After an API restart, workers reappear within 2 s, and event history starts empty (job timestamps are still in the DB).
+### ITD-011: RabbitMQ topology in `definitions.json`
 
-### ITD-025: Contracts as shared example messages
-**Status:** Accepted · **Date:** 2026-10-25 · **Amends:** ITD-001, ITD-017
-- **Decision:**
-  - LLD §4 is the spec, with one example per message variant in `contracts/examples/`.
-  - The API parses with zod; the worker uses TypedDicts and required-key checks.
-  - Both test suites parse every example.
-- **Why:** five message types don't justify JSON Schema in two languages.
-- **Consequences:** the two sides can't drift apart without failing a test.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-25 |
+| **Context** | RabbitMQ queue arguments (`x-queue-type=quorum`, `x-delivery-limit`, `x-dead-letter-exchange`, `x-consumer-timeout`) are immutable after creation—any mismatch between API and worker declarations crashes the channel with `PRECONDITION_FAILED`. |
+| **Decision** | Define all exchanges, queues, bindings, and the `guest` user in `infra/rabbitmq/definitions.json`, loaded once at broker boot via `rabbitmq.conf` (`dm.coordinator` uses `x-delivery-limit = 1_000_000` because RabbitMQ 4 import rejects `-1`). API and workers only passive-declare queues/exchanges to verify they exist; workers dynamically create only their exclusive auto-delete `dm.control` queue. |
+| **Rationale** | Single declarative file for broker topology eliminates startup declaration races and guarantees identical queue settings across Node, Python, and tests. |
+| **Options considered** | Active `assertQueue` with full arguments in both API and worker code; post-start shell scripts calling `rabbitmqadmin`. |
+| **Trade-offs** | Editing queue arguments requires updating `definitions.json` + LLD §3 and recreating the RabbitMQ Docker volume, and `guest` dev credentials live in the repo. |
 
-### ITD-026: Atomic writes without fsync
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:** temp file plus `os.replace`, with no `fsync`.
-- **Why:** OS or power crashes are out of scope, and `fsync` slows every task.
-- **Consequences:** readers still never see partial files.
+### ITD-012: In-memory observability and on-read task graph
 
-### ITD-027: Measure the coordinator before optimizing it
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:** keep one transaction per message. A benchmark (F = 20k, C = 10, W = 8) reports completions per second and how long workers wait on the coordinator. Batch only if it shows a bottleneck.
-- **Why:** with small C, workers might outpace about 45k sequential transactions. That's unproven until measured.
-- **Measured (2026-10-26, MacBook Pro, local docker Postgres + RabbitMQ 4, `DATA_DIR` on local disk, W = 8 via `PUT /fleet`):** `BENCHMARK_F=20000 ./scripts/benchmark-job.py` — wall **99.3 s**; **9,000** task completions (4,000 GENERATE + 5,000 MERGE) → **~91 completions/s** end-to-end; `timings_ms`: generation **27.7 s**, reduction **71.6 s**. Workers stayed busy through reduction; no sign the single-threaded coordinator was the dominant bottleneck at this C (throughput is well below the ~200–1,000/s local coordinator band in the HLD). Fair-share relay window query did not need batching at this scale.
-- **Consequences:** defer coordinator batching and sharding (future-work §3); re-run if F, concurrent job count, or C changes materially.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-25 |
+| **Context** | Operators and the UI need live worker health, queue depth, job progress, event history, and a per-job task DAG with CSV previews without adding write-path overhead to every task. |
+| **Decision** | Keep the live worker registry (fed by 2 s `dm.heartbeats`) and a 500-event ring buffer (`GET /events`) in API memory, combined with SQL job counts and RabbitMQ management stats in `GET /stats` (marking a job `waiting` when `GENERATING` with 0 done tasks and no busy worker). Build `GET /jobs/:id/task-graph` on read from existing `tasks` and `items` rows (`produced_by`, `reserved_by`, and `file_start`/`file_count`), including `produced_by` on partial inputs for CSV preview links. |
+| **Rationale** | Heartbeats and events are ephemeral display data (no DB write load), and `tasks` + `items` already store exact lineage so deriving the DAG on read needs zero extra tables or coordinator writes. |
+| **Options considered** | Persisting `workers`, `events`, and `task_edges` tables in Postgres; pushing updates via WebSockets or SSE. |
+| **Trade-offs** | Worker list and event ring buffer reset when the API restarts (durable job/task rows stay in Postgres), and `GET /jobs/:id/task-graph` scans the job’s tasks and items on each 1 s poll while the modal is open. |
 
-### ITD-028: Only the API builds file paths
-**Status:** Accepted · **Date:** 2026-10-25
-- **Decision:**
-  - `api/src/paths.ts` builds input, partial and result paths. The barrier SQL gets its prefix from it.
-  - Completions report counts only; the coordinator derives the paths.
-  - Workers use the paths in their message.
-- **Why:** paths were built in three places, and the coordinator trusted worker input.
-- **Consequences:** one source for the file layout, checked by a path test.
+### ITD-013: Cross-language contracts via shared example JSON
 
-### ITD-029: UI with React + Vite + TypeScript
-**Status:** Accepted (delegated) · **Date:** 2026-10-25
-- **Decision:** a Vite + React + TS single-page app with plain `fetch`, a 1 s polling hook and plain CSS. No state or component libraries. In development, Vite proxies `/api` to port 3000.
-- **Why:** a light, free, same-language thin client. Rejected: plain HTML (clumsy for a live dashboard), Next.js (overkill).
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-25 |
+| **Context** | The TypeScript API and Python workers communicate through 6 JSON message types over RabbitMQ and must never drift on field names or types. |
+| **Decision** | Keep one canonical JSON file per message variant in `contracts/examples/*.json` with `schema_version: 1`. Validate incoming/outgoing messages with `zod` in the API (`api/src/messages.ts`) and required-key validators in Python (`worker/src/dismean_worker/messages.py`), and run unit tests in both test suites that parse every example file. |
+| **Rationale** | Enforces full cross-language contract compatibility in CI with zero codegen build steps for a small, stable message set. |
+| **Options considered** | JSON Schema + code generation for TypeScript and Python; Protobuf or Avro. |
+| **Trade-offs** | Changing any message shape requires bumping `schema_version` and updating LLD §4, `contracts/examples/`, and both parsers in the same change. |
 
-### ITD-030: RabbitMQ definitions bootstrap
-**Status:** Accepted (delegated) · **Date:** 2026-10-26
-- **Decision:** `infra/rabbitmq/definitions.json` declares `guest` (sha256 hash) and `/` permissions; `rabbitmq.conf` sets only `load_definitions` (not `management.load_definitions` on the same file).
-- **Why:** `load_definitions` skips default user seed; duplicate import hung boot; without `guest`, AMQP connections reset.
-- **Consequences:** rotate the hash if the local password changes; management UI still uses `guest`.
+### ITD-014: Configurable fleet size W and graceful scale-down
 
-### ITD-031: Coordinator queue delivery limit
-**Status:** Accepted (delegated) · **Date:** 2026-10-26
-- **Decision:** `dm.coordinator` uses `x-delivery-limit: 1000000` instead of `-1`.
-- **Why:** on `rabbitmq:4-management`, unlimited (`-1`) is not used at import (open-questions V-3); coordinator does not nack in normal operation (ITD-022).
-- **Consequences:** document in LLD; revisit if broker adds supported unlimited quorum limit.
-
-### ITD-032: Configurable W via `fleet` table and supervisor polling
-**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** ITD-015
-- **Decision:** a one-row `fleet(id=1, desired_workers)` table in Postgres stores target `W` (`1..32`, seeded to `WORKER_COUNT`). The API exposes `GET /fleet` and `PUT /fleet {desired_workers}`. The supervisor polls `GET /fleet` every `FLEET_POLL_INTERVAL_S` (1.5 s): scaling up spawns new worker slots; scaling down sends `SIGTERM` to excess slots so they stop consuming, finish any in-flight task, emit a `STOPPED` heartbeat, and exit cleanly.
-- **Why:** workers remain decoupled from the API process (invariant 1: workers still never touch Postgres; only the supervisor polls the HTTP API).
-- **Consequences:** dynamic scaling at runtime with zero lost work. W is per supervisor: two supervisors on two hosts would each run W. Refined by ITD-035.
-
-### ITD-033: The API exits when it loses RabbitMQ; a restart loop brings it back
-**Status:** Accepted · **Date:** 2026-10-26
-- **Decision:**
-  - Any AMQP connection or channel `error`/`close` outside shutdown logs and `exit(1)`, the same rule as workers (ITD-021).
-  - A coordinator error that is neither a DB outage nor handled by failing the job also exits; the unacked message is redelivered after the restart.
-  - `scripts/run-api.sh` restarts the API with backoff (1 s doubling to 30 s, reset after 60 s healthy). Locally the API runs under it; in production, the container orchestrator plays this role.
-  - `/health` reports AMQP from the connection state instead of opening a channel per request.
-- **Why:** before this, a broker restart either crashed the API on an unhandled `error` event or left the coordinator silently consuming nothing, so jobs hung (invariant 13). Rejected: reconnecting in-process (every consumer, channel and the relay would need rebuilding, with more states to get wrong).
-- **Consequences:** a broker blip costs a few seconds of API downtime; in-memory events reset (as on any restart). Checked by `scripts/e2e-broker-restart.py`.
-
-### ITD-034: Fair-share dispatch from the outbox relay
-**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** ITD-020
-- **Decision:**
-  - Tasks wait in Postgres as `CREATED`. The relay publishes only into free slots: `budget = DISPATCH_QUEUE_FACTOR × consumers − ready`, read from a passive declare of `dm.tasks` (V-5), capped at `RELAY_BATCH`.
-  - Order: one task per active job per round, starting after the job served last (a rotating cursor); within a job, MERGE before GENERATE and deeper merges first.
-  - The coordinator signals the relay after every applied message, since each one frees a worker slot.
-  - Messages carry no priority.
-- **Why:** strict queue priority let one reducing job block all other jobs' generation, and FIFO made small jobs wait behind big ones. Rejected: a separate dispatcher process (the relay already owns publishing, so invariant 3 still holds); per-level priority on a classic queue (loses the quorum delivery limit).
-- **Consequences:** a small job submitted behind a large one finishes first (checked by `scripts/e2e-fairness.py`). The queue holds about 2 tasks per worker, so per-job ordering is enforced in SQL rather than by the broker. Each relay tick runs one window query over `CREATED` tasks.
-
-### ITD-035: Fleet target source and drain order
-**Status:** Accepted (delegated) · **Date:** 2026-10-26 · **Refines:** ITD-032
-- **Decision:** `fleet.set_by_api` records whether an operator has set W. Until then, each API start resets W to `WORKER_COUNT`. On scale-down the supervisor drains idle workers first (matched by pid from `GET /fleet`), then the newest busy ones. A slot's restart backoff resets after 60 s of healthy running.
-- **Why:** the first migration seeded W = 4 and the startup insert never overrode it, so `WORKER_COUNT` was ignored; draining busy workers first wasted in-flight work.
-
-### ITD-036: UI tests on extracted pure logic
-**Status:** Accepted (delegated) · **Date:** 2026-10-26
-- **Decision:** formatting, estimates, validation and event/job filtering live in `ui/src/format.ts` and are tested with vitest (same runner as the API). No DOM test library.
-- **Why:** these are the parts that hold logic; rendering is checked manually and by the browser smoke test. Rejected: jsdom plus Testing Library (more dependencies for little extra coverage at this size).
-
-### ITD-037: Reconcile orphaned `PUBLISHED` tasks
-**Status:** Accepted (delegated) · **Date:** 2026-10-26
-- **Decision:** the relay resets `PUBLISHED` → `CREATED` when (1) API starts and `dm.tasks` has zero ready and zero unacked (broker empty), or (2) a row stayed `PUBLISHED` longer than `PUBLISHED_STALE_MS` with no worker `BUSY` on that `task_id`. Docker Compose uses named volumes and a fixed RabbitMQ `hostname` so quorum state survives container recreation.
-- **Why:** the outbox only selects `CREATED`; a lost broker message otherwise hangs the job forever (invariant 13).
-- **Consequences:** at-least-once republish is safe with ITD-009; `api/src/relay/reconcilePublished.ts`, `api/src/mq/queueStats.ts`.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-26 |
+| **Context** | Operators need to scale the worker fleet W (1–32) at runtime from the API or UI (problem-statement bonus) without workers connecting to Postgres or killing in-flight tasks on scale-down. |
+| **Decision** | Store `desired_workers` and `set_by_api` in a single-row Postgres `fleet` table. On API startup, seed `desired_workers = WORKER_COUNT` only if `set_by_api = false`; `PUT /fleet` sets `set_by_api = true`. `GET /fleet` returns `desired_workers` plus live worker PIDs and states (`IDLE`/`BUSY`). The Python supervisor polls `GET /fleet` every 1.5 s: it spawns workers on scale-up and sends `SIGTERM` on scale-down—draining `IDLE` workers first, dead slots second, and newest `BUSY` workers last so active tasks finish before exit. |
+| **Rationale** | Preserves the “workers never touch Postgres” invariant, respects `WORKER_COUNT` on fresh deploys while persisting runtime API changes across restarts, and avoids interrupting in-flight tasks when scaling down. |
+| **Options considered** | Static `WORKER_COUNT` env var only; workers reading `fleet` from Postgres; always overwriting `fleet` from `WORKER_COUNT` on API restart; stopping arbitrary busy workers first. |
+| **Trade-offs** | Up to ~1.5 s polling lag after `PUT /fleet`, `desired_workers` is applied per supervisor host, and once `PUT /fleet` is used, `WORKER_COUNT` env changes are ignored until reset. |

@@ -289,7 +289,7 @@ export function jobsRouter(
           status: "CANCELLED",
         });
       } catch {
-        // best-effort broadcast (ITD-013)
+        // best-effort broadcast (ITD-009)
       }
       pushEvent({ type: "job_cancelled", job_id: job.id });
 

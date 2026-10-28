@@ -115,7 +115,7 @@ sequenceDiagram
 
 If the crash happens after the coordinator commits but before it acks, the triggering completion is redelivered. The coordinator sees it as a duplicate and drops it, and the work it already committed stands.
 
-## 6. Coordinator errors (ITD-022)
+## 6. Coordinator errors (ITD-002)
 
 ```mermaid
 sequenceDiagram

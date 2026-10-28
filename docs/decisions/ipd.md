@@ -1,96 +1,75 @@
 # Important Product Decisions (IPD)
 
-What the user gets or sees. Entries are never deleted; a superseded entry is kept as a stub. Statuses and decision authority are defined in [`AGENTS.md`](../../AGENTS.md#decision-authority).
+What users get and see. Only **current** decisions are listed (see [`AGENTS.md`](../../AGENTS.md#decision-authority) for statuses). Earlier superseded or merged items live in git history.
+
+**Active IPD IDs:** `IPD-001` – `IPD-006`. Product-facing details for file formats, retention, failure retries, fleet scaling, and fair-share live in the matching ITD entries.
+
+Each entry is a small table: **Context** (problem), **Decision** (what we do), **Rationale** (why), **Options considered** (alternatives we skipped), and **Trade-offs** (costs and limits).
+
+---
 
 ### IPD-001: Generation completes before reduction
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** a job is evaluated only once all F files exist.
-  - States: `GENERATING`, then `REDUCING`, then `COMPLETED`, or `FAILED` / `CANCELLED`.
-  - `generation_completed_at` marks the moment it's ready.
-- **Why:** clean phases. Rejected: pipelining generation and merging; fusing generation with the first sum.
-- **Consequences:** generation and reduction times are shown separately. Files never change once read. The cost is a small barrier (ITD-007).
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | A job must create F random files and then average them across workers. We need a clear rule for when merging is allowed to start. |
+| **Decision** | All F input files must exist before merging starts. Job states: `GENERATING` → `REDUCING` → `COMPLETED` (or `FAILED` / `CANCELLED`). We record `generation_completed_at` when generation finishes. |
+| **Rationale** | Two clear phases are easy to reason about. Users can inspect any input file, and merging always sees a complete set of F files. |
+| **Options considered** | Start merging while generation is still running; fold generation into the first merge step without saving raw input files. |
+| **Trade-offs** | Workers wait briefly for the last generate task at the barrier (ITD-004). We write all F input files to disk first, though other jobs can use idle workers meanwhile (ITD-003). UI shows generation and reduction times separately. |
 
 ### IPD-002: No disk cap
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** accept any F and C within the bounds. The API and UI show a size estimate.
-- **Consequences:** the largest job needs about 100 GB of inputs plus about 200 GB of partials kept until cleanup. A full disk fails the job through retries (IPD-010). A cap is designed in future-work §8.
+
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Large F and C values can use gigabytes of disk for inputs and partial merges. |
+| **Decision** | Allow any F and C within spec limits. The API and UI show an upfront disk and task estimate before/when running a job. |
+| **Rationale** | The spec allows large jobs; showing an estimate lets the user judge capacity without arbitrary hard blocks on local machines. |
+| **Options considered** | Reject jobs over a fixed disk quota (`413`, future-work §8); cap F×C below the spec maximum. |
+| **Trade-offs** | Huge jobs can fill the disk until cleanup runs. If the disk fills up, tasks fail and the job ends `FAILED` after retries (ITD-007). |
 
 ### IPD-003: Values are integers 0–100
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** uniform random integers in [0, 100], inclusive.
-- **Why:** easy to check by eye, compact, and exact sums (ITD-011).
 
-### IPD-004: Output formats
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** `result.csv` (one line of C values, 8 decimal places) and `result.npy` (`float64`). Any input file can be downloaded as CSV.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | The spec asks for random numbers in each file but does not fix the numeric range or type. |
+| **Decision** | Each value in each input file is a random integer from 0 to 100 inclusive. |
+| **Rationale** | Small integers are easy to read in CSV previews, fit in one byte (`uint8`), and sum without rounding error until the final divide. |
+| **Options considered** | Random floats; wider integer ranges (32-bit or 64-bit inputs). |
+| **Trade-offs** | Fixed range; supporting wider inputs or floats would require wider storage types and a new decision (ITD-008). |
 
-### IPD-005: Jobs run in publish order
-**Status:** Superseded by IPD-014 · **Date:** 2026-10-23
-- Jobs run in FIFO task order. The rule that jobs can be submitted any time with no limit carries over into IPD-014 and IPD-016.
+### IPD-004: Cancel
 
-### IPD-006: Cancel
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** `POST /jobs/:id/cancel` stops an active job. Its queued tasks are skipped and late results are ignored (ITD-013). Its files are kept until cleanup or delete.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | Users may start a large job by mistake or want to free workers without waiting for completion. |
+| **Decision** | `POST /jobs/:id/cancel` marks a running job `CANCELLED`. Queued tasks are skipped, late worker results are ignored (ITD-009), and existing files stay on disk until cleanup or `DELETE /jobs/:id`. |
+| **Rationale** | Stops wasted work right away while keeping already-written files available if the user wants to inspect them. |
+| **Options considered** | No cancel (wait for finish or restart services); delete all job files immediately on cancel. |
+| **Trade-offs** | In-flight worker tasks may finish their current batch before noticing cancel, and partial files stay on disk until cleanup or delete. |
 
-### IPD-007: Retention and cleanup
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:**
-  - Everything is kept while a job runs.
-  - A cleanup job (every 10 min, plus an endpoint and a UI button) deletes the partials of jobs that finished more than 1 h ago.
-  - Inputs and results stay until `DELETE /jobs/:id`.
-- **Consequences:** the merge structure can be inspected afterwards, and retries never lose their inputs. Peak disk use happens while a job runs.
+### IPD-005: No artificial worker slowdown
 
-### IPD-008: W fixed at startup
-**Status:** Superseded by IPD-015 · **Date:** 2026-10-23
-- W = `WORKER_COUNT` at startup. Replaced by runtime-configurable W via API and UI.
+| Field | Value |
+|---|---|
+| **Status** | Accepted · **Date:** 2026-10-23 |
+| **Context** | The problem statement mentions workers running at different speeds. We had to decide whether to inject fake delays in normal runs. |
+| **Decision** | Workers always run at full speed. There is no built-in sleep or slow-mode toggle in production code. |
+| **Rationale** | Real OS scheduling and batch sizes already vary timing; unit simulations test stragglers directly without slowing every local run and test. |
+| **Options considered** | Per-worker sleep/throttle env var for demos (future-work §9). |
+| **Trade-offs** | Small local jobs finish very fast (~hundreds of ms), so visual speed differences across workers are subtle unless F or C is large. Speed-variance behaviour is verified in `speed-variance.test.ts` (design-doc §9). |
 
-### IPD-009: No artificial worker slowdown
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** workers run at natural speed.
-- **Consequences:** on one laptop, speed differences between workers are small. A simulation test demonstrates the uneven-speed handling (design doc §9). A slowdown flag is designed in future-work §9.
+### IPD-006: Job task tree in the UI
 
-### IPD-010: A job fails after 3 failed attempts of one task
-**Status:** Accepted · **Date:** 2026-10-23
-- **Decision:** the job becomes `FAILED`, with a readable `failure_reason` shown in the API and UI (ITD-010).
-
-### IPD-011: Input bounds follow the spec
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:** `2 ≤ F ≤ 99,999` and `2 ≤ C ≤ 999,999`. Anything else returns 400 with a clear message.
-
-### IPD-012: No backup copies of slow tasks
-**Status:** Deferred · **Date:** 2026-10-23
-- **Decision:** speculative execution is designed (future-work §6) but not built.
-
-### IPD-013: UI scope
-**Status:** Accepted (delegated) · **Date:** 2026-10-23
-- **Decision:** a single page, polling every second (ITD-024), stack per ITD-029. It shows:
-  - workers (idle, busy, dead) and each worker's current task;
-  - queue depth;
-  - jobs by status, plus waiting jobs;
-  - per-phase job progress;
-  - throughput;
-  - a live log of the last 500 events.
-
-  Actions: submit, cancel, delete, download, cleanup.
-
-### IPD-014: Jobs that are reducing finish first
-**Status:** Superseded by IPD-016 · **Date:** 2026-10-25 · **Supersedes:** IPD-005
-- Jobs could be submitted any time; merge work was meant to be preferred 2:1. In practice the broker served merges strictly first and small jobs waited behind big ones.
-
-### IPD-016: Active jobs share the workers fairly
-**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-014
-- **Decision:**
-  - Jobs can be submitted any time, with no limit.
-  - Every active job gets an equal share of task slots, round-robin (ITD-034). Within a job, merges run before generation.
-- **Consequences:** a small job submitted behind a large one finishes in about the time it would take alone with W/N workers, instead of waiting for the large job. A single large job still uses the whole fleet.
-
-### IPD-015: Configurable worker count W via API and UI
-**Status:** Accepted · **Date:** 2026-10-26 · **Supersedes:** IPD-008
-- **Decision:** `GET /fleet` and `PUT /fleet {desired_workers}` (`1..32`) read and update target `W` at runtime, and the UI provides a live target-vs-actual control (ITD-032).
-- **Consequences:** both bonus requirements in the problem statement are built end-to-end.
-
-### IPD-017: Job task tree in the UI
-**Status:** Accepted (delegated) · **Date:** 2026-10-26
-- **Decision:** two-pane UI: job list + submit on the left, job summary on the right. **Open task graph** launches a modal (backdrop, Esc/close) with the full **DAG**: toolbar zoom (−/+, **Fit**), **Collapse generation** (default when &gt;6 GENERATE tasks), **Focus path** (trim to selected task’s lineage), **All edges**. Graph uses most of the modal; task detail (I/O, CSV preview) in a side column when a node is selected (`GET /jobs/:id/task-graph`). Fleet scale, cleanup, and cancel-all under collapsed **Operations**.
-- **Why:** keep the main job view light while giving the reduction graph room; KPI strip, worker table, and event log removed from the default view.
-- **Consequences:** expand generation via hub click or uncheck collapse; `/jobs/:id/tasks` and `GET /events` remain for scripts.
+| Field | Value |
+|---|---|
+| **Status** | Accepted (delegated) · **Date:** 2026-10-26 |
+| **Context** | Users need a simple way to run jobs, resize the worker fleet, and inspect how generation and merges actually ran. |
+| **Decision** | Single-page UI polling every 1 s: left sidebar for job submission, filters (including “waiting”), job list, and **Operations** (fleet W, cleanup, cancel all); right pane for selected job summary and downloads; **Open task graph** modal for the full DAG with zoom, optional collapsed generation, upstream/downstream links, and CSV previews (ITD-012). Scripts still use `/stats` and `GET /events`. |
+| **Rationale** | Keeps the main screen uncluttered while giving a full visual DAG and file preview when debugging a job. |
+| **Options considered** | Multi-page app; Grafana/Prometheus stack; always embedding the full DAG inline; keeping a noisy live event-log table on the main screen. |
+| **Trade-offs** | The browser UI does not show the raw `/events` stream (available via API) and collapses large GENERATE layers by default so the graph stays readable. |

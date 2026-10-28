@@ -37,7 +37,7 @@ def get_queue(name: str) -> dict:
 
 
 def verify_dispatch_signals() -> list[str]:
-    """V-5: a passive declare on a quorum queue reports ready messages and live consumers (ITD-034)."""
+    """V-5: a passive declare on a quorum queue reports ready messages and live consumers (ITD-003)."""
     errors: list[str] = []
     conn = pika.BlockingConnection(pika.URLParameters(AMQP_URL))
     try:

@@ -102,7 +102,7 @@ async function processMessage(
           status: handlerResult.stopStatus,
         });
       } catch {
-        // best-effort broadcast (ITD-013)
+        // best-effort broadcast (ITD-009)
       }
     }
   } catch (err) {
@@ -138,7 +138,7 @@ async function processMessage(
             status: "FAILED",
           });
         } catch {
-          // best-effort broadcast (ITD-013)
+          // best-effort broadcast (ITD-009)
         }
       }
     } catch (inner) {
@@ -187,7 +187,7 @@ async function drainQueue(
           backoff = Math.min(backoff * 2, 30_000);
           continue;
         }
-        // The message stays unacked and is redelivered after the restart (ITD-033).
+        // The message stays unacked and is redelivered after the restart (ITD-005).
         console.error("coordinator: unrecoverable error, exiting", err);
         process.exit(1);
       }

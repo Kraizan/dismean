@@ -1,6 +1,6 @@
 # Design doc: Distributed Mean
 
-**Status:** Implemented (local) · **Updated:** 2026-10-26 · [HLD](hld.md) · [LLD](lld.md) · [ITDs](decisions/itd.md) · [IPDs](decisions/ipd.md)
+**Status:** Implemented (local) · **Updated:** 2026-10-28 · [HLD](hld.md) · [LLD](lld.md) · [ITDs](decisions/itd.md) · [IPDs](decisions/ipd.md)
 
 ## 1. Problem
 
@@ -11,7 +11,7 @@ Constraints:
 - Workers run at different speeds.
 - Several jobs can run at once.
 
-Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` (IPD-011). Values: integers in [0, 100] (IPD-003).
+Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` ([spec](problem-statement.md)). Values: integers in [0, 100] (IPD-003).
 
 ## 2. Goals and non-goals
 
@@ -24,7 +24,7 @@ Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` (IPD-011). Values: integers 
 
 **Not now:**
 - Weighted fair share by job size (future-work §1).
-- Hang detection faster than about 15 minutes (ITD-008).
+- Hang detection faster than about 15 minutes (ITD-005).
 - Running on more than one machine (HLD §7).
 - A disk cap (IPD-002).
 
@@ -33,7 +33,7 @@ Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` (IPD-011). Values: integers 
 `mean = sum / count`, and sums combine in any order. So:
 - A **partial** is `(sum_vector, count)`. An input file is a partial with count 1.
 - Inputs and partials are interchangeable **items**. Any ≤5 items can be merged into one.
-- With `int64` sums, every partial is exact. The only rounding is the final division (ITD-011).
+- With `int64` sums, every partial is exact. The only rounding is the final division (ITD-008).
 
 ## 4. Approach
 
@@ -46,17 +46,17 @@ Bounds: `2 ≤ F ≤ 99,999`, `2 ≤ C ≤ 999,999` (IPD-011). Values: integers 
 
 A job puts many messages on the queue, so there's no 1:1 mapping between jobs and queue items.
 
-### 4.2 Generation, then a barrier (IPD-001, ITD-007)
+### 4.2 Generation, then a barrier (IPD-001, ITD-004)
 
-1. `POST /jobs` inserts the job and its G GENERATE tasks in one statement. The outbox relay dispatches them as queue slots free up (ITD-005, ITD-034).
-2. Each GENERATE task writes ≤5 files seeded by `(jobs.seed, file_index)`, so a re-run writes identical bytes (ITD-009).
+1. `POST /jobs` inserts the job and its G GENERATE tasks in one statement. The outbox relay dispatches them as queue slots free up (ITD-003).
+2. Each GENERATE task writes ≤5 files seeded by `(jobs.seed, file_index)`, so a re-run writes identical bytes (ITD-006).
 3. The coordinator adds each completion's file count to `jobs.generated_files`.
 4. **Barrier:** the completion that reaches F does all of the following in the same transaction:
    - moves the job to `REDUCING` and records `generation_completed_at`;
    - inserts F input items;
    - creates ⌊F/5⌋ leaf MERGEs.
 
-### 4.3 Reduction by dynamic pool merge (ITD-006)
+### 4.3 Reduction by dynamic pool merge (ITD-004)
 
 Each job has a pool of `READY` items. After every pool change the scheduler runs:
 
@@ -75,17 +75,17 @@ a MERGE is final when its input counts add up to F
 
 **Invariant:** Σ count over `READY` and `RESERVED` items = F. A merge consumes exactly its reserved inputs and produces one item whose count is their sum.
 
-So the merge whose inputs add up to F must be the last one. It's flagged `final` when created (ITD-018). Its worker divides by F and writes `result.csv` and `result.npy`. Applying its completion marks the job `COMPLETED`.
+So the merge whose inputs add up to F must be the last one. It's flagged `final` when created (ITD-004). Its worker divides by F and writes `result.csv` and `result.npy`. Applying its completion marks the job `COMPLETED`.
 
 There's no polling and no counting of finished tasks. The generation barrier uses the same counter idea.
 
-### 4.5 Workers (ITD-004, ITD-008)
+### 4.5 Workers (ITD-002, ITD-005)
 
 - **Pull-based, `prefetch=1`:** a faster worker simply takes more tasks. That's the whole load balancer.
 - **Stateless and DB-free:** the API coordinator makes every decision.
 - **Small tasks (≤5 files):** short tails at the end of each phase.
 
-### 4.6 Multiple jobs: fair-share dispatch (ITD-034, IPD-016)
+### 4.6 Multiple jobs: fair-share dispatch (ITD-003)
 
 - Tasks wait in Postgres. The relay keeps about 2 ready tasks per live worker in `dm.tasks` and fills each free slot round-robin across active jobs. Within a job it picks MERGE before GENERATE, deepest merge first.
 - **Why:** with plain FIFO, a small job waited behind a large job's whole backlog. Queue priority (the earlier design) turned out to be strict on RabbitMQ 4 quorum queues, so a reducing job blocked every other job's generation.
@@ -117,18 +117,18 @@ Uneven speeds change who does how many tasks, not whether work is available.
 
 | Failure | Handling | Ref |
 |---|---|---|
-| Worker crash or network loss | Unacked message requeued (AMQP heartbeat 10 s) | ITD-008 |
-| Worker hung | `x-consumer-timeout` (15 min) closes the channel; the worker exits and the supervisor restarts it | ITD-008, ITD-021 |
-| Duplicate run | Deterministic output, atomic rename, task counted once | ITD-009 |
-| API crash between commit and publish | Relay republishes `CREATED` tasks | ITD-005 |
-| Broker empty but DB still `PUBLISHED` | Startup or stale reconcile → `CREATED` | ITD-037 |
-| Coordinator crash | Transaction rolls back; the message is redelivered | ITD-004 |
-| Postgres down | Coordinator holds the message unacked and retries with backoff | ITD-022 |
-| RabbitMQ restart or connection loss | API and workers exit; `run-api.sh` and the supervisor restart them; unacked work is redelivered | ITD-021, ITD-033 |
-| Coordinator bug | Job `FAILED` ("internal error"); never hangs. If failing the job itself fails, the API exits and the message is redelivered | ITD-022, ITD-033 |
-| Task error | 3 attempts, then the job is `FAILED` | ITD-010 |
-| Crash loop (poison message) | Delivery limit 3, then dead-letter queue, then the job is `FAILED` | ITD-010 |
-| Cancelled or failed job with queued tasks | `job.stopped` broadcast; workers skip; coordinator ignores | ITD-013 |
+| Worker crash or network loss | Unacked message requeued (AMQP heartbeat 10 s) | ITD-005 |
+| Worker hung | `x-consumer-timeout` (15 min) closes the channel; the worker exits and the supervisor restarts it | ITD-005 |
+| Duplicate run | Deterministic output, atomic rename, task counted once | ITD-006 |
+| API crash between commit and publish | Relay republishes `CREATED` tasks | ITD-003 |
+| Broker empty but DB still `PUBLISHED` | Startup or stale reconcile → `CREATED` | ITD-003 |
+| Coordinator crash | Transaction rolls back; the message is redelivered | ITD-002 |
+| Postgres down | Coordinator holds the message unacked and retries with backoff | ITD-002 |
+| RabbitMQ restart or connection loss | API and workers exit; `run-api.sh` and the supervisor restart them; unacked work is redelivered | ITD-005 |
+| Coordinator bug | Job `FAILED` ("internal error"); never hangs. If failing the job itself fails, the API exits and the message is redelivered | ITD-002, ITD-005 |
+| Task error | 3 attempts, then the job is `FAILED` | ITD-007 |
+| Crash loop (poison message) | Delivery limit 3, then dead-letter queue, then the job is `FAILED` | ITD-007 |
+| Cancelled or failed job with queued tasks | `job.stopped` broadcast; workers skip; coordinator ignores | ITD-009 |
 
 Sequences: [seq-failure-handling.md](diagrams/seq-failure-handling.md).
 
@@ -138,22 +138,23 @@ Sequences: [seq-failure-handling.md](diagrams/seq-failure-handling.md).
 |---|---|---|
 | Fair-share dispatch from the relay | Small jobs aren't stuck behind big ones; per-job order lives in SQL | One window query per relay tick; fairness is per task, not per byte |
 | Exit on broker loss, not reconnect | One recovery path, same as workers | A few seconds of API downtime per broker blip |
-| One API coordinator | No races; workers stay simple | Throughput ceiling (measured, ITD-027); a restart-safe single point of failure |
+| One API coordinator | No races; workers stay simple | Throughput ceiling (measured, ITD-002); a restart-safe single point of failure |
 | Strict tail rule | Fewest tasks | Up to about one `t_m` per job |
 | Generation barrier | Clean phases and separate metrics | Up to one `t_g` idle when a job runs alone |
 | Keep intermediates until cleanup | Debuggable; retries keep their inputs | Peak disk ≈ inputs + all partials |
 | Consumer timeout as the hang detector | Almost no code | About 15 minutes to detect a stuck worker |
 | Observability in memory, polled | No extra tables and no SSE | Event history resets when the API restarts |
 
-## 8. Observability (ITD-024)
+## 8. Observability (ITD-012)
 
-The UI polls `/stats` and `/events` every second. They report:
+The UI polls `/stats` and `/jobs` every second, and refreshes the selected job plus `GET /jobs/:id/task-graph` while it is open. `/stats` reports:
 - workers: idle, busy and dead;
 - queue depth;
 - jobs by status, including *waiting* (not started yet);
 - per-phase progress;
-- throughput;
-- a last-500 event log.
+- throughput.
+
+`GET /events` still serves the last-500 event buffer for scripts and debugging; the default UI does not poll it (IPD-006).
 
 Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` is the number of pool rows that are `READY` or `RESERVED`. Each merge of k items removes k − 1 rows, so `live` falls from F to 1.
 
@@ -163,17 +164,18 @@ Reduction progress is exact: `1 − (live − 1)/(F − 1)`, where `live` is the
 |---|---|---|
 | Golden: regenerate the seeded files in NumPy and compare with `result.npy` bit for bit | Correctness | `worker/tests/test_golden_*.py`; `scripts/e2e.py` |
 | Scheduler over random, newest-first and one-slow-worker completion orders | Invariant, exactly ⌈(F−1)/4⌉ merges, one final merge, progress never goes backwards | `api/test/scheduler-sql.integration.test.ts` (drives the real handlers and SQL) |
-| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Never slower, and less idle time, than a fixed 5-ary tree (IPD-009) | `api/test/speed-variance.test.ts` (discrete-event, 40 seeds) |
+| Speed-variance simulation (0.5×–3× speeds plus one 10× straggler) vs a static tree | Never slower, and less idle time, than a fixed 5-ary tree (IPD-005) | `api/test/speed-variance.test.ts` (discrete-event, 40 seeds) |
 | Fair-share order and cursor rotation | Jobs interleave; deepest merge first; no starvation at budget 1 | `api/test/dispatcher.integration.test.ts`, `scripts/e2e-fairness.py` |
 | Every completion delivered twice and out of order | Idempotency | `api/test/coordinator-*-integration.test.ts` |
-| Both suites parse `contracts/examples/` | Message contracts agree (ITD-025) | `contract-examples` + `api/test/messages.test.ts` |
-| Barrier SQL paths equal `paths.inputPath()` | One path source (ITD-028) | `api/test/paths.test.ts` |
+| Both suites parse `contracts/examples/` | Message contracts agree (ITD-013) | `contract-examples` + `api/test/messages.test.ts` |
+| Barrier SQL paths equal `paths.inputPath()` | One path source (ITD-008) | `api/test/paths.test.ts` |
 | SIGKILL every worker while tasks are in flight (F = 300, C = 200k) | Recovery with a bit-exact mean | `scripts/chaos-recovery.py` |
 | Restart RabbitMQ | API and workers recover and run a new job | `scripts/e2e-broker-restart.py` |
 | Supervisor scale-down order | Idle workers drained first | `worker/tests/test_supervisor.py` |
-| UI logic | Estimates, validation, event and status filters | `ui/src/format.test.ts` |
-| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-027) | `BENCHMARK_F=20000 scripts/benchmark-job.py` — **~91 completions/s**, 99.3 s wall; no batching (2026-10-26) |
-| API validation, cancel, and fleet W scaling | HTTP errors, stop broadcast, and dynamic W (`GET/PUT /fleet`) | `scripts/e2e-api-errors.py`, `scripts/e2e-fleet.py` |
+| UI logic | Estimates, validation, status filters (including client-side `WAITING`) | `ui/src/format.test.ts`, `ui/src/taskGraph.test.ts` |
+| Task graph and partial CSV | Lineage API and int64 partial download on the happy path | `api/test/taskGraph.test.ts`, `api/test/npy.test.ts`; `scripts/e2e.py` |
+| Benchmark: F = 20k, C = 10, W = 8 | Whether the coordinator needs batching (ITD-002) | `BENCHMARK_F=20000 scripts/benchmark-job.py` — **~91 completions/s**, 99.3 s wall; no batching (2026-10-26) |
+| API validation, cancel, and fleet W scaling | HTTP errors (including task-graph 404s), stop broadcast, and dynamic W (`GET/PUT /fleet`) | `scripts/e2e-api-errors.py`, `scripts/e2e-fleet.py` |
 | Several job sizes end-to-end | Generation/reduction edge sizes | `scripts/e2e-matrix.py` |
 | Worker task IO | Generate/merge atomic writes | `worker/tests/test_tasks.py` |
 | Stale `PUBLISHED` without broker message | Reconcile → `CREATED` | `api/test/reconcile-published.integration.test.ts` |
@@ -188,13 +190,16 @@ The spec asks for F files workers can read; IPD-001 keeps a clear generation bar
 No. `merge.py` keeps one `int64` accumulator and memory-maps **one** input at a time (`mmap_mode="r"`), adds, then `del` before the next. At most one mapped input plus the accumulator are live.
 
 **Why a single-threaded coordinator instead of workers updating Postgres?**  
-The pool tail rule (`2–4 READY` only when `open_merges = 0`) is a **job-global** predicate. Concurrent writers could each see `open_merges > 0` and skip the final tail merge, hanging the job. `FOR UPDATE` on the job row serializes scheduling safely. Scale-out path: shard `dm.coordinator` by `job_id` (future-work §3); ITD-027 showed batching is not needed yet at F = 20k.
+The pool tail rule (`2–4 READY` only when `open_merges = 0`) is a **job-global** predicate. Concurrent writers could each see `open_merges > 0` and skip the final tail merge, hanging the job. `FOR UPDATE` on the job row serializes scheduling safely. Scale-out path: shard `dm.coordinator` by `job_id` (future-work §3); ITD-002 showed batching is not needed yet at F = 20k.
 
 **What if a task is `PUBLISHED` in Postgres but the broker no longer has the message?**  
-ITD-037: on API startup, if `dm.tasks` has zero ready and zero unacked, reset all `PUBLISHED` on active jobs to `CREATED`. While running, reset stale `PUBLISHED` rows (older than `PUBLISHED_STALE_MS`) when no worker heartbeat reports `BUSY` on that `task_id`. Safe because tasks are deterministic and completions are idempotent (ITD-009).
+ITD-003: on API startup, if `dm.tasks` has zero ready and zero unacked, reset all `PUBLISHED` on active jobs to `CREATED`. While running, reset stale `PUBLISHED` rows (older than `PUBLISHED_STALE_MS`) when no worker heartbeat reports `BUSY` on that `task_id`. Safe because tasks are deterministic and completions are idempotent (ITD-006).
 
 **Duplicate completion after consumer timeout or crash loop?**  
 First completion: `UPDATE … WHERE status IN ('CREATED','PUBLISHED')` → `DONE`. Second: zero rows → `duplicate_completion`. A late `task.failed` after success hits `stale_failure` because the task is no longer open.
 
 **Why fair-share dispatch instead of RabbitMQ priority?**  
-Quorum queues on RabbitMQ 4 delivered strict priority (all MERGE before any GENERATE), starving other jobs’ generation. Fair-share keeps ~2 tasks per worker in SQL order (ITD-034).
+Quorum queues on RabbitMQ 4 delivered strict priority (all MERGE before any GENERATE), starving other jobs’ generation. Fair-share keeps ~2 tasks per worker in SQL order (ITD-003).
+
+**Why derive the task graph at read time?**  
+The pool already records which items each merge reserved and which task produced each partial. Rebuilding edges on `GET /jobs/:id/task-graph` stays consistent with retries and dynamic scheduling without a second source of truth (ITD-012).

@@ -52,7 +52,7 @@ def _idle_pids(fleet: dict[str, Any]) -> set[int]:
 
 @dataclass
 class Supervisor:
-    """Keeps `target` non-retiring workers alive. W is per supervisor (ITD-032)."""
+    """Keeps `target` non-retiring workers alive. W is per supervisor (ITD-014)."""
 
     target: int
     slots: list[Slot] = field(default_factory=list)

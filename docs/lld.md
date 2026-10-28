@@ -1,668 +1,287 @@
 # Low-level design
 
-**Updated:** 2026-10-26 · [HLD](hld.md) · [Design doc](design-doc.md) · [ITDs](decisions/itd.md)
+**Updated:** 2026-10-28 · [HLD](hld.md) · [Design doc](design-doc.md) · [ITDs](decisions/itd.md) · [IPDs](decisions/ipd.md)
 
-## 1. Repository layout
+This document describes **how the system works**: data model, queues, messages, and main flows. It avoids file-by-file code detail — use [code-map.md](code-map.md) and the source for that. **Canonical DDL** is in `api/migrations/`. **Canonical message JSON** is in `contracts/examples/`.
 
-```
-api/
-  src/
-    server.ts            Express app, startup and shutdown
-    config.ts            env parsing (zod)
-    paths.ts             the only place file paths are built (ITD-028)
-    db/                  pool, migrations runner, queries
-    mq/                  amqplib connection, topology check, publish helpers
-    messages.ts          zod parsers for every message type
-    routes/              jobs, cleanup, stats, events, health
-    coordinator/         consumer, handlers, scheduler
-    relay/               outbox relay and fair-share dispatcher (ITD-034)
-    cleanup/             cleanup sweep
-    stats/               heartbeat consumer, worker list, event buffer, snapshot
-    storage/             CSV streaming, deletes
-  migrations/            NNN_description.sql, applied in order at startup
-  test/
-worker/
-  src/dismean_worker/
-    worker.py            AMQP loop, dispatch, heartbeats, drain
-    supervisor.py        spawns and restarts W workers
-    tasks/generate.py
-    tasks/merge.py
-    storage.py           atomic writes
-    messages.py          TypedDicts + required-key checks (ITD-025)
-    config.py
-  tests/
-contracts/
-  examples/              one canonical JSON per message type and variant; parsed by both test suites
-infra/
-  rabbitmq/definitions.json   full broker topology, loaded at broker start (ITD-023)
-  rabbitmq/rabbitmq.conf      load_definitions = /etc/rabbitmq/definitions.json
-docs/
-data/                    DATA_DIR default (gitignored)
-docker-compose.yml
-```
+---
 
-**File-by-file roles:** [code-map.md](code-map.md) (keep in sync when adding or renaming paths).
+## 1. Where things live
 
-## 2. Database schema (Postgres 16)
+| Area | Role |
+|---|---|
+| **API** | HTTP, coordinator, outbox relay, cleanup, stats |
+| **Worker + supervisor** | Run GENERATE/MERGE tasks; supervisor matches process count to `GET /fleet` |
+| **Postgres** | Jobs, tasks (outbox), merge pool (`items`), fleet target W |
+| **RabbitMQ** | Task queue, coordinator events, heartbeats, cancel broadcast |
+| **DATA_DIR** | Shared inputs, partials, results per job |
+| **UI** | Bonus dashboard (IPD-006) |
+| **Infra** | Docker Compose for Postgres and RabbitMQ; topology in `infra/rabbitmq/definitions.json` |
 
-```sql
-CREATE TYPE job_status  AS ENUM ('GENERATING', 'REDUCING', 'COMPLETED', 'FAILED', 'CANCELLED');
-CREATE TYPE task_kind   AS ENUM ('GENERATE', 'MERGE');
-CREATE TYPE task_status AS ENUM ('CREATED', 'PUBLISHED', 'DONE', 'FAILED', 'CANCELLED');
-CREATE TYPE item_kind   AS ENUM ('INPUT', 'PARTIAL');
-CREATE TYPE item_state  AS ENUM ('READY', 'RESERVED', 'CONSUMED', 'DELETED');
+---
 
-CREATE TABLE jobs (
-  id                       uuid PRIMARY KEY,
-  f                        integer NOT NULL CHECK (f BETWEEN 2 AND 99999),
-  c                        integer NOT NULL CHECK (c BETWEEN 2 AND 999999),
-  status                   job_status NOT NULL DEFAULT 'GENERATING',
-  seed                     bigint NOT NULL CHECK (seed >= 0),   -- RNG seed; makes the job reproducible
-  generated_files          integer NOT NULL DEFAULT 0,
-  failure_reason           text,
-  created_at               timestamptz NOT NULL DEFAULT now(),
-  generation_completed_at  timestamptz,
-  finished_at              timestamptz,                     -- COMPLETED / FAILED / CANCELLED
-  partials_cleaned_at      timestamptz
-);
+## 2. Database (Postgres 16)
 
-CREATE TABLE tasks (
-  id            uuid PRIMARY KEY,
-  job_id        uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  kind          task_kind NOT NULL,
-  status        task_status NOT NULL DEFAULT 'CREATED',
-  attempt       smallint NOT NULL DEFAULT 1,
-  level         smallint NOT NULL,          -- GENERATE: 0; MERGE: 1 + max(input level)
-  file_start    integer,                    -- GENERATE only
-  file_count    smallint,                   -- GENERATE only, 1..5
-  input_count   integer,                    -- MERGE only: sum of input item counts
-  is_final      boolean NOT NULL DEFAULT false,
-  worker_id     text,
-  duration_ms   integer,
-  last_error    text,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  published_at  timestamptz,
-  completed_at  timestamptz
-);
-CREATE INDEX tasks_outbox   ON tasks (created_at) WHERE status = 'CREATED';
-CREATE INDEX tasks_job_open ON tasks (job_id, kind) WHERE status IN ('CREATED', 'PUBLISHED');
+### Tables
 
-CREATE TABLE items (
-  id           uuid PRIMARY KEY,
-  job_id       uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  kind         item_kind NOT NULL,
-  state        item_state NOT NULL DEFAULT 'READY',
-  count        integer NOT NULL,            -- number of input files this item covers
-  level        smallint NOT NULL,           -- INPUT: 0; PARTIAL: level of the producing MERGE
-  path         text NOT NULL,               -- relative to DATA_DIR, built by paths.ts
-  produced_by  uuid,                        -- task id (PARTIAL only)
-  reserved_by  uuid,                        -- MERGE task id that will consume it
-  created_at   timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX items_pool     ON items (job_id, created_at, id) WHERE state = 'READY';
-CREATE INDEX items_reserved ON items (reserved_by) WHERE state = 'RESERVED';
+| Table | Purpose |
+|---|---|
+| **jobs** | F, C, status, seed, `generated_files`, timestamps, `failure_reason` |
+| **tasks** | Outbox + history: `GENERATE` or `MERGE`, status, attempt, level, file range or `input_count`, `is_final` |
+| **items** | Merge pool: `INPUT` or `PARTIAL`, `state`, `count`, path, `produced_by`, `reserved_by` |
+| **fleet** | Single row: desired worker count W (1–32) |
 
-CREATE TABLE fleet (
-  id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-  desired_workers smallint NOT NULL DEFAULT 4 CHECK (desired_workers BETWEEN 1 AND 32),
-  updated_at      timestamptz NOT NULL DEFAULT now(),
-  set_by_api      boolean NOT NULL DEFAULT false   -- false: reset to WORKER_COUNT at each API start (ITD-035)
-);
-```
+### Enums (short)
 
-Worker state and the event log are kept in API memory, not in the database (ITD-024, §10.3).
+- **Job:** `GENERATING` → `REDUCING` → `COMPLETED` | `FAILED` | `CANCELLED`
+- **Task:** `CREATED` → `PUBLISHED` → `DONE` | `FAILED` | `CANCELLED`
+- **Item:** `READY` → `RESERVED` → `CONSUMED` | `DELETED`
 
-**Invariant (checked in tests):** for every job in `REDUCING`, `SUM(count) WHERE state IN ('READY','RESERVED') = f`.
+### Rules
+
+- Tasks with status **`CREATED`** are waiting for the relay to publish (ITD-003).
+- **`items` with `READY`** are eligible to be merged (up to 5 at a time).
+- While a job is **`REDUCING`**, the sum of `count` on items in `READY` or `RESERVED` always equals **F** (tested invariant).
+- Worker list and the event log are **not** in Postgres (ITD-012).
+
+Full `CREATE TABLE` and indexes: `api/migrations/`.
+
+---
 
 ## 3. RabbitMQ topology
 
-All objects are declared in `infra/rabbitmq/definitions.json` and loaded when the broker starts (ITD-023). The file also declares the `guest` user and `/` permissions, because `load_definitions` disables the default user seed. Use only `load_definitions` in `rabbitmq.conf` (not `management.load_definitions` on the same file — concurrent import can hang boot). At startup the API and workers check their queues and exchanges exist (passive declare) and exit with a clear error if they don't. The only objects created at runtime are the per-worker exclusive control queues.
+Declared in `definitions.json` at broker start (ITD-011). API and workers only **check** objects exist (passive declare). Each worker creates its own **control queue** at runtime.
 
-| Name | Kind | Arguments / bindings |
+| Exchange / queue | Who publishes | Who consumes | Notes |
+|---|---|---|---|
+| **dm.tasks** | Outbox relay | Workers | Quorum; ~2 ready msgs per worker; delivery limit 3; consumer timeout 15 min; DLX → dead queue |
+| **dm.tasks.dead** | Broker | Coordinator | Crash loop / poison |
+| **dm.events** → **dm.coordinator** | Workers | Coordinator | `task.completed`, `task.failed` |
+| **dm.events** → **dm.heartbeats** | Workers | Stats (auto-ack) | Display only; TTL 10 s |
+| **dm.control** | API (cancel / fail) | Each worker | `job.stopped` fanout |
+
+Task messages: JSON, persistent, `message_id = task_id:attempt`. **No priority field** — order is chosen in SQL (ITD-003).
+
+Broker checks (V-1–V-5): [open-questions.md](open-questions.md).
+
+---
+
+## 4. Message contracts (schema version 1)
+
+Written spec below; copy-paste examples in `contracts/examples/` (ITD-013). Paths in messages are under `DATA_DIR` and are built only by the API (ITD-008).
+
+| Message | Routing | Main fields |
 |---|---|---|
-| `dm.tasks` | direct exchange | routes key `task` to queue `dm.tasks` |
-| `dm.tasks` | queue | `x-queue-type=quorum`, `x-delivery-limit=3`, `x-dead-letter-exchange=dm.dlx`, `x-consumer-timeout=900000`. Kept shallow by the dispatcher (about 2 ready tasks per worker, ITD-034) |
-| `dm.dlx` | fanout exchange | goes to `dm.tasks.dead` |
-| `dm.tasks.dead` | queue | quorum, durable |
-| `dm.events` | topic exchange | `task.completed` and `task.failed` go to `dm.coordinator`; `worker.heartbeat` goes to `dm.heartbeats` |
-| `dm.coordinator` | queue | quorum, `x-delivery-limit=1000000` (coordinator never nacks in normal operation, see §5.1) |
-| `dm.heartbeats` | queue | classic, `x-message-ttl=10000`, `x-max-length=10000`, `x-overflow=drop-head` |
-| `dm.control` | fanout exchange | goes to one server-named, exclusive, auto-delete queue per worker |
+| **Task (GENERATE)** | `dm.tasks` | `file_indices`, `output_paths`, `seed`, `c` |
+| **Task (MERGE)** | `dm.tasks` | `inputs[]` (path, count, item_id), `output_path` or `result_paths`, `final`, `total_count` |
+| **task.completed** | `task.completed` | `task_id`, `attempt`, `worker_id`, `duration_ms`, `output` (files written or merge count) — **no paths** |
+| **task.failed** | `task.failed` | `task_id`, `attempt`, `error` |
+| **worker.heartbeat** | `worker.heartbeat` | `state`, optional current task — UI only |
+| **job.stopped** | `dm.control` | `job_id`, `status` (`CANCELLED` or `FAILED`) |
 
-**Message properties:**
-- Task and event messages: `content_type=application/json`, `delivery_mode=2` (persistent).
-- Task messages also carry `message_id = "{task_id}:{attempt}"`. They carry no priority: the dispatcher decides order (ITD-034).
+Limits: at most **5** files per GENERATE or MERGE task.
 
-Broker behaviours checked on the pinned image, with their fallbacks: [open-questions.md](open-questions.md) V-1 to V-5.
-
-## 4. Message contracts (v1)
-
-The LLD is the written spec. `contracts/examples/` holds one canonical example per type and variant, and both test suites parse every example (ITD-025). Every path is relative to `DATA_DIR` and built only by the API (ITD-028).
-
-### 4.1 Task (exchange `dm.tasks`, consumed by workers)
-
-```json
-{
-  "schema_version": 1,
-  "task_id": "uuid",
-  "job_id": "uuid",
-  "attempt": 1,
-  "kind": "GENERATE",
-  "c": 1000,
-  "generate": {
-    "seed": 8231947712,
-    "file_indices": [0, 1, 2, 3, 4],
-    "output_paths": ["jobs/<job>/inputs/000000.npy", "…"]
-  }
-}
-```
-
-```json
-{
-  "schema_version": 1,
-  "task_id": "uuid",
-  "job_id": "uuid",
-  "attempt": 1,
-  "kind": "MERGE",
-  "c": 1000,
-  "merge": {
-    "inputs": [{ "item_id": "uuid", "path": "jobs/<job>/inputs/000000.npy", "count": 1 }],
-    "output_path": "jobs/<job>/partials/<task_id>.npy",
-    "final": false,
-    "total_count": null,
-    "result_paths": null
-  }
-}
-```
-
-For the final merge: `"final": true`, `"total_count": F`, `"output_path": null`, and `"result_paths": {"npy": "jobs/<job>/result.npy", "csv": "jobs/<job>/result.csv"}`. Limits: `1 ≤ len(file_indices) ≤ 5`, `2 ≤ len(inputs) ≤ 5`.
-
-### 4.2 Task completed (routing key `task.completed`)
-
-```json
-{
-  "schema_version": 1,
-  "task_id": "uuid",
-  "job_id": "uuid",
-  "attempt": 1,
-  "kind": "MERGE",
-  "worker_id": "host-2-41233",
-  "duration_ms": 63,
-  "output": { "count": 5 }
-}
-```
-
-GENERATE reports `"output": {"files_written": 5}`. Completions carry no paths: the coordinator derives them (ITD-028).
-
-### 4.3 Task failed (routing key `task.failed`)
-
-```json
-{
-  "schema_version": 1,
-  "task_id": "uuid",
-  "job_id": "uuid",
-  "attempt": 1,
-  "kind": "MERGE",
-  "worker_id": "host-2-41233",
-  "error": { "type": "FileNotFoundError", "message": "…" }
-}
-```
-
-### 4.4 Worker heartbeat (routing key `worker.heartbeat`)
-
-```json
-{
-  "schema_version": 1,
-  "worker_id": "host-2-41233",
-  "hostname": "host",
-  "pid": 41233,
-  "state": "BUSY",
-  "task_id": "uuid",
-  "job_id": "uuid",
-  "task_kind": "MERGE",
-  "tasks_done": 118,
-  "started_at": "2026-10-23T11:00:00Z",
-  "sent_at": "2026-10-23T11:05:02Z"
-}
-```
-
-`state` is one of `IDLE | BUSY | STOPPING | STOPPED`. `STOPPED` is sent once on a graceful exit.
-
-### 4.5 Job stopped (exchange `dm.control`)
-
-```json
-{ "schema_version": 1, "type": "job.stopped", "job_id": "uuid", "status": "CANCELLED" }
-```
+---
 
 ## 5. Coordinator
 
-A single consumer on `dm.coordinator` and `dm.tasks.dead`, with `prefetch=50`. Messages are **handled one at a time**, and each is acked only after its transaction commits. Events are pushed to the in-memory buffer after commit.
+Single consumer on **dm.coordinator** and **dm.tasks.dead**. Processes **one message at a time**; acks only after Postgres **commit**.
 
-### 5.1 Error handling (ITD-022, ITD-033)
+### On each message
 
-| Error | Action |
+1. Lock the **job** row.
+2. If the job is not `GENERATING` or `REDUCING`, ignore (inactive job) and ack.
+3. Otherwise handle **completed**, **failed**, or **dead-letter**.
+4. Commit, ack, push events, **signal the relay** (frees a worker slot).
+
+### Task completed
+
+- Mark task **DONE** only if still `CREATED` or `PUBLISHED` (else duplicate — ignore).
+- **GENERATE:** add to `generated_files`. When count reaches **F**, run the **barrier** (one transaction): set `REDUCING`, insert F **INPUT** items, create **leaf merges**, run **schedule**.
+- **MERGE (not final):** mark inputs **CONSUMED**, insert new **PARTIAL** item, **schedule**.
+- **MERGE (final):** mark job **COMPLETED**.
+
+### Schedule (merge pool)
+
+Repeat until nothing to do:
+
+- If **≥ 5** items `READY` → create a MERGE over any 5 (reserve them).
+- Else if **2–4** `READY` and **no open MERGE** (`CREATED`/`PUBLISHED`) → merge all of them.
+- Else stop.
+
+Final merge is created when reserved inputs’ counts sum to **F**.
+
+Leaf merges at the barrier use a **set-based** SQL batch for large F (not one loop per merge).
+
+### Task failed
+
+- Match **attempt**. Retry: back to `CREATED` (up to 3 attempts). Else fail the job. MERGE inputs stay **RESERVED** during retry.
+
+### Dead letter
+
+- After 3 broker deliveries without ack → fail the job (crash loop).
+
+### Errors (ITD-002, ITD-005)
+
+| Situation | Behavior |
 |---|---|
-| Message fails zod parsing | Log + event `invalid_message`, ack |
-| DB connection or availability error (including while failing the job) | Roll back. Keep the message **unacked** at the head of the in-process queue and retry it with backoff (1 s, doubling, max 30 s) until the DB is back. Never nack |
-| Any other exception | Roll back. In a new transaction, run `fail_job(job, "internal error: {message}")`. Ack |
-| `fail_job` itself fails for a non-DB reason | Log and `exit(1)`. The message stays unacked and is redelivered after `run-api.sh` restarts the API |
-| AMQP connection or channel closes | Log and `exit(1)`; the restart loop reconnects (ITD-033) |
+| Bad JSON / schema | Log, ack (no retry loop) |
+| Postgres down | Roll back, keep message unacked, retry with backoff |
+| Other bug | Fail job with “internal error”, ack |
+| RabbitMQ lost | API exits; restart loop redelivers unacked messages |
 
-### 5.2 Handlers
+Coordinator does not build paths from worker payloads — only counts and IDs (ITD-008).
 
-```text
-handle(msg):
-  BEGIN
-    job := SELECT * FROM jobs WHERE id = msg.job_id FOR UPDATE
-    if job is null or job.status not in (GENERATING, REDUCING):
-        COMMIT; ack; event ignored_inactive_job; return
-    route: task.completed → on_completed | task.failed → on_failed | dead-letter → on_dead
-  COMMIT
-  ack
-  after commit: push events; signal the relay (every applied message frees a worker slot); publish job.stopped if the job was stopped
+---
 
-on_completed(job, msg):
-  task := UPDATE tasks SET status='DONE', completed_at=now(), worker_id=msg.worker_id, duration_ms=msg.duration_ms
-          WHERE id = msg.task_id AND status IN ('CREATED','PUBLISHED') RETURNING *
-  if task is null: event duplicate_completion; return
-  if task.kind = GENERATE:
-      job.generated_files := UPDATE jobs SET generated_files = generated_files + task.file_count RETURNING generated_files
-      if job.generated_files = job.f: barrier(job)
-  else:
-      UPDATE items SET state='CONSUMED' WHERE reserved_by = task.id
-      if task.is_final:
-          UPDATE jobs SET status='COMPLETED', finished_at=now(); event job_completed
-      else:
-          INSERT INTO items (kind='PARTIAL', count=task.input_count, level=task.level,
-                             path=paths.partialPath(job.id, task.id), produced_by=task.id, state='READY')
-          schedule(job)
+## 6. HTTP routes that change state
 
-barrier(job):
-  UPDATE jobs SET status='REDUCING', generation_completed_at=now()
-  INSERT INTO items (id, job_id, kind, count, level, path, state)
-    SELECT gen_random_uuid(), job.id, 'INPUT', 1, 0, $input_prefix || lpad(i::text, 6, '0') || '.npy', 'READY'
-    FROM generate_series(0, job.f - 1) AS i          -- $input_prefix = paths.inputPrefix(job.id)
-  create_leaf_merges(job)                             -- set-based, §5.3
-  schedule(job)                                       -- handles the 0–4 leftover items
-  event generation_completed
+| Action | Effect |
+|---|---|
+| **POST /jobs** | One transaction: insert job + all GENERATE tasks (`CREATED`), random seed, signal relay |
+| **POST …/cancel** | Job + open tasks cancelled; broadcast `job.stopped` (best-effort) |
+| **DELETE /jobs/:id** | 409 if active; else delete DB row and job directory |
+| **PUT /fleet** | Update desired W |
+| **POST /cleanup** | Delete old partial files per retention |
 
-schedule(job):
-  loop:
-    ready := SELECT id, count, level FROM items
-             WHERE job_id = job.id AND state = 'READY'
-             ORDER BY created_at, id LIMIT 5
-    if len(ready) = 5:                                   create_merge(job, ready)
-    elif len(ready) >= 2 and open_merges(job) = 0:       create_merge(job, ready)
-    else: break
+Everything else is read-only or in-memory stats.
 
-open_merges(job) := SELECT count(*) FROM tasks
-                    WHERE job_id = job.id AND kind = 'MERGE' AND status IN ('CREATED','PUBLISHED')
+---
 
-create_merge(job, items):
-  total := Σ items.count
-  task  := INSERT INTO tasks (kind='MERGE', level=1+max(items.level), input_count=total,
-                              is_final=(total = job.f), status='CREATED')
-  UPDATE items SET state='RESERVED', reserved_by=task.id WHERE id = ANY(items.ids)
+## 7. Outbox relay (ITD-003)
 
-on_failed(job, msg):
-  task := SELECT * FROM tasks WHERE id = msg.task_id AND attempt = msg.attempt
-          AND status IN ('CREATED','PUBLISHED') FOR UPDATE
-  if task is null: event stale_failure; return
-  if task.attempt < MAX_ATTEMPTS:
-      UPDATE tasks SET attempt = attempt + 1, status = 'CREATED', last_error = msg.error.message
-      event task_retry                  -- the relay republishes it; MERGE inputs stay RESERVED
-  else:
-      UPDATE tasks SET status = 'FAILED', last_error = msg.error.message WHERE id = task.id
-      fail_job(job, "task {id} failed {MAX_ATTEMPTS} times: {error}")
+Runs on a timer and when the coordinator signals.
 
-on_dead(job, task_msg):               -- from dm.tasks.dead (delivery limit exceeded)
-  task := SELECT … WHERE id = task_msg.task_id AND status IN ('CREATED','PUBLISHED')
-  if task is null: return             -- another copy already finished it
-  event task_dead_lettered
-  UPDATE tasks SET status = 'FAILED', last_error = 'delivery limit exceeded' WHERE id = task.id
-  fail_job(job, "task {id} exceeded delivery limit (worker crash loop)")
+1. Compute **budget**: about `(2 × consumers) − messages already ready` on `dm.tasks` (via passive declare), capped by `RELAY_BATCH`.
+2. Pick up to **budget** tasks in **`CREATED`**: **round-robin across jobs** (one task per job per round), and for each job prefer **MERGE before GENERATE**, **deeper level first**, then earlier `created_at, id`.
+3. Build task JSON (paths from API path helper), **publish with confirm**.
+4. Mark tasks **`PUBLISHED`**.
 
-fail_job(job, reason):
-  UPDATE jobs SET status='FAILED', failure_reason=reason, finished_at=now()
-  UPDATE tasks SET status='CANCELLED' WHERE job_id = job.id AND status IN ('CREATED','PUBLISHED')
-  event job_failed; publish job.stopped after commit
-```
+If publish fails, transaction rolls back — tasks stay `CREATED`.
 
-### 5.3 Leaf merges at the barrier (set-based)
+**Orphan `PUBLISHED`:** if the broker lost the message, reset to `CREATED` on startup (when management API reports 0 ready and 0 unacked) or when stale with no worker busy on that task (ITD-003).
 
-Creating ⌊F/5⌋ merges one loop iteration at a time is too slow for F = 100k (about 60k statements in one transaction). Instead:
-
-```sql
-WITH numbered AS (
-  SELECT id, (row_number() OVER (ORDER BY path) - 1) / 5 AS grp
-  FROM items WHERE job_id = $job AND state = 'READY'
-), groups AS (                                  -- volatile CTE is materialized: one uuid per group
-  SELECT grp, gen_random_uuid() AS task_id
-  FROM numbered GROUP BY grp HAVING count(*) = 5
-), ins AS (
-  INSERT INTO tasks (id, job_id, kind, level, input_count, is_final)
-  SELECT task_id, $job, 'MERGE', 1, 5, (5 = $f) FROM groups
-)
-UPDATE items i SET state = 'RESERVED', reserved_by = g.task_id
-FROM numbered n JOIN groups g USING (grp)
-WHERE i.id = n.id;
-```
-
-`ORDER BY path` groups consecutive files. The 0–4 leftover items stay `READY` for `schedule()`. When F = 5, the single group is already final. When F < 5, `schedule()` creates the final merge.
-
-### 5.4 Lock order
-
-The coordinator locks the job row first, then task and item rows. The relay locks only task rows (`SKIP LOCKED`), so the two can't deadlock.
-
-## 6. Routes that write
-
-### 6.1 Create (`POST /jobs`)
-
-The job and all its GENERATE tasks are created in one statement:
-
-```sql
-WITH j AS (
-  INSERT INTO jobs (id, f, c, seed) VALUES ($id, $f, $c, $seed) RETURNING id, f
-)
-INSERT INTO tasks (id, job_id, kind, level, file_start, file_count)
-SELECT gen_random_uuid(), j.id, 'GENERATE', 0, s, LEAST(5, j.f - s)
-FROM j, generate_series(0, j.f - 1, 5) AS s;
-```
-
-`seed` is a random non-negative 48-bit integer (it must stay exact as a JSON number). After commit: signal the relay, and push the event `job_created`.
-
-### 6.2 Cancel (`POST /jobs/:id/cancel`) and delete (`DELETE /jobs/:id`)
-
-```text
-cancel: tx { lock job; 409 unless GENERATING/REDUCING; status CANCELLED, finished_at;
-             open tasks → CANCELLED }  → publish job.stopped → event job_cancelled
-delete: 409 if active; rm -rf DATA_DIR/jobs/{id}; DELETE FROM jobs (cascades) → event job_deleted
-```
-
-`job.stopped` is published by whoever stopped the job (this route, or `fail_job` in the coordinator), right after commit. It's best-effort (ITD-013).
-
-## 7. Outbox relay and fair-share dispatch (ITD-005, ITD-034)
-
-```text
-every RELAY_INTERVAL_MS, or immediately when a route or the coordinator signals (after every applied message):
-  q      := passive declare dm.tasks            -- message_count (ready), consumer_count (live workers)
-  budget := min(RELAY_BATCH, DISPATCH_QUEUE_FACTOR × q.consumer_count − q.message_count)
-  if budget ≤ 0: return                         -- no free slot, or no workers: tasks wait in Postgres
-  BEGIN
-    ids := round-robin selection (below), at most budget
-    rows := SELECT … FROM tasks WHERE id = ANY(ids) AND status = 'CREATED' FOR UPDATE SKIP LOCKED
-    for MERGE rows (one query for all): inputs := items WHERE reserved_by = ANY(merge ids)
-            output_path := paths.partialPath(job, row.id) unless final; result_paths := paths.resultPaths(job) if final
-    for GENERATE rows: output_paths := paths.inputPath(job, i) for i in [file_start, file_start + file_count)
-    publish each TaskMessage to dm.tasks on a confirm channel (no priority)
-    await all confirms                 -- a nack or timeout throws: ROLLBACK, retry next tick
-    UPDATE tasks SET status='PUBLISHED', published_at=now()
-    WHERE id = ANY(ids) AND status = 'CREATED'
-  COMMIT
-  cursor := job of the last published task
-```
-
-Round-robin selection:
-
-```sql
-WITH cur AS (SELECT created_at, id FROM jobs WHERE id = $cursor_job),
-ranked AS (
-  SELECT t.id, j.id AS job_id, j.created_at AS job_created,
-         row_number() OVER (PARTITION BY t.job_id
-                            ORDER BY (t.kind = 'MERGE') DESC, t.level DESC, t.created_at, t.id) AS rn
-  FROM tasks t JOIN jobs j ON j.id = t.job_id
-  WHERE t.status = 'CREATED' AND j.status IN ('GENERATING', 'REDUCING')
-)
-SELECT r.id FROM ranked r LEFT JOIN cur ON true
-WHERE r.rn <= $budget
-ORDER BY r.rn,                                                    -- round 1 = each job's best task
-         CASE WHEN cur.id IS NULL OR (r.job_created, r.job_id) > (cur.created_at, cur.id)
-              THEN 0 ELSE 1 END,                                  -- start after the job served last
-         r.job_created, r.job_id
-LIMIT $budget;
-```
-
-The cursor's timestamp is read in SQL: a JavaScript `Date` drops Postgres microseconds and would mis-order the rotation.
-
-A crash after publishing but before commit republishes the batch (at-least-once). The duplicates are harmless (ITD-009). Workers' prefetch of 1 plus about two ready tasks per worker means a finished worker never waits for the relay, while per-job ordering stays in SQL.
-
-**Orphaned `PUBLISHED` (ITD-037):** on relay start, if `dm.tasks` has zero ready and zero unacked (management API), reset all `PUBLISHED` on active jobs to `CREATED`. Each relay tick with `budget = 0` also resets `PUBLISHED` rows older than `PUBLISHED_STALE_MS` when no live worker heartbeat has `state = BUSY` and `task_id` equal to that row.
+---
 
 ## 8. Worker
 
-### 8.1 Threads
+- **One task at a time** (`prefetch=1`). Ack only after result is published.
+- **GENERATE:** seeded random uint8 file(s); temp file then rename.
+- **MERGE:** sum up to 5 inputs (mmap one at a time); final task divides by F and writes result CSV + npy.
+- Listens for **job.stopped**; skips and acks those tasks.
+- **Broker error after startup** → exit; supervisor restarts (ITD-005).
+- **2 s heartbeat** is for the UI only (ITD-005).
 
-- **Main thread:** pika `BlockingConnection` (AMQP heartbeat 10 s), consumers, publishing, acks, heartbeat timer. It never blocks on task work.
-- **Task thread:** a `ThreadPoolExecutor(max_workers=1)` runs the NumPy work. Its result returns to the main thread via `connection.add_callback_threadsafe`.
+Task work runs off the AMQP thread so slow jobs do not block connection heartbeats.
 
-### 8.2 Loop
-
-```text
-start:
-  connect (retry with backoff while the broker is unreachable; startup only)
-  channel.confirm_delivery(); channel.basic_qos(prefetch_count=1)
-  passive-declare dm.tasks, dm.events, dm.control   → missing: log "topology not loaded" and exit(1)
-  declare an exclusive control queue bound to dm.control; consume with auto_ack → stopped_jobs.add(job_id)
-  consume dm.tasks (manual ack) → on_task
-  call_later(HEARTBEAT_INTERVAL_S, send_heartbeat)   (re-arms itself)
-  SIGTERM → draining = true; basic_cancel(tasks consumer); exit 0 once idle
-  any channel or connection error after startup → log and exit(1); the supervisor restarts (ITD-021)
-
-on_task(delivery):
-  msg := parse + required-key check  → invalid: publish task.failed if task_id is present, else log; ack
-  if msg.job_id in stopped_jobs: ack; return
-  state := BUSY; submit run_task(msg) → on_done(delivery, msg, result | error)
-
-on_done (main thread):
-  publish task.completed or task.failed to dm.events (confirmed)
-  if the publish fails: exit(1)          -- unacked message is redelivered; the coordinator dedupes
-  basic_ack
-  state := IDLE; tasks_done += 1 on success
-  if draining: send STOPPED heartbeat, close, exit 0
-```
-
-### 8.3 Task implementations
-
-```python
-def run_generate(msg):
-    g = msg["generate"]
-    for idx, rel in zip(g["file_indices"], g["output_paths"]):
-        rng = np.random.default_rng([g["seed"], idx])
-        arr = rng.integers(0, 101, size=msg["c"], dtype=np.uint8)   # [0, 100] inclusive
-        atomic_save_npy(DATA_DIR / rel, arr)
-
-def run_merge(msg):
-    m = msg["merge"]
-    acc = np.zeros(msg["c"], dtype=np.int64)
-    for inp in m["inputs"]:                       # ≤5 inputs, one memory-mapped at a time
-        arr = np.load(DATA_DIR / inp["path"], mmap_mode="r")
-        if arr.shape != (msg["c"],):
-            raise ValueError(f"bad shape {arr.shape} for {inp['path']}")
-        acc += arr
-        del arr
-    if m["final"]:
-        mean = acc / m["total_count"]             # the only float operation
-        atomic_save_npy(DATA_DIR / m["result_paths"]["npy"], mean)
-        atomic_save_csv(DATA_DIR / m["result_paths"]["csv"], mean)   # one line, '%.8f', comma-separated
-    else:
-        atomic_save_npy(DATA_DIR / m["output_path"], acc)
-
-def atomic_save_npy(path, arr):                   # no fsync (ITD-026)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp-{uuid4().hex}")
-    with open(tmp, "wb") as f:
-        np.save(f, arr)
-    os.replace(tmp, path)
-```
+---
 
 ## 9. Supervisor
 
-```text
-start with WORKER_COUNT slots; poll GET /fleet every FLEET_POLL_INTERVAL_S (1.5 s); if the API is down, keep the current count
-scale up: add slots with the lowest free index and spawn `python -m dismean_worker.worker`
-scale down: mark excess slots retiring and SIGTERM them, idle workers first (pid matched against GET /fleet),
-            then slots with no live process, then the newest busy ones; a retiring worker finishes its task and exits 0
-every 0.5 s: reap children; restart any non-retiring slot that exited non-zero
-            (per-slot backoff 1 s doubling to 30 s; reset after 60 s of healthy running)
-SIGTERM/SIGINT: forward SIGTERM to all; wait up to DRAIN_TIMEOUT_S; then SIGKILL the rest; exit
-```
+- Polls **GET /fleet** and spawns or stops worker processes to match **desired W**.
+- Restarts workers that exit with error (backoff).
+- Scale-down: stop **idle** workers first, then newer busy ones; let them finish current task.
+- On shutdown: SIGTERM workers, wait, then kill if needed.
 
-W is per supervisor (ITD-032). The worker's own SIGTERM handler only schedules the drain on the pika connection (`add_callback_threadsafe`), because a signal can interrupt pika mid-frame.
+Workers never call Postgres; only the supervisor calls the API for fleet size.
+
+---
 
 ## 10. HTTP API
 
-| Method | Path | Request | Success | Errors |
-|---|---|---|---|---|
-| `POST` | `/jobs` | `{ "f": int, "c": int }` | `201` job + `estimate` | `400` validation |
-| `GET` | `/jobs` | `?status=&limit=50&offset=0` | `200 { jobs: Job[] }` | — |
-| `GET` | `/jobs/:id` | — | `200` job + progress + task counts + pool items | `404` |
-| `GET` | `/jobs/:id/tasks` | `?limit=` (default 500, max 5000), `?offset=`, `?kind=`, `?status=` | `200 { total, limit, offset, tasks }` | `404`, `400` |
-| `GET` | `/jobs/:id/task-graph` | — | `200 { tasks, edges }` — per-task inputs/outputs from `items`, parent edges for MERGE | `404` |
-| `GET` | `/jobs/:id/partials/:taskId.csv` | — | `200 text/csv` (partial int64 vector) | `404` |
-| `POST` | `/jobs/:id/cancel` | — | `202` job | `404`, `409` if finished |
-| `DELETE` | `/jobs/:id` | — | `204` (deletes rows and `DATA_DIR/jobs/:id`) | `404`, `409` if active |
-| `GET` | `/jobs/:id/result.csv` | — | `200 text/csv` | `404`, `409` if not completed |
-| `GET` | `/jobs/:id/result.npy` | — | `200 application/octet-stream` | `404`, `409` |
-| `GET` | `/jobs/:id/inputs/:index.csv` | — | `200 text/csv` (one line) | `404` if not generated |
-| `GET` | `/fleet` | — | `200 { desired_workers, updated_at, source, workers: {counts…, list: [{id, hostname, pid, state}]} }` | — |
-| `PUT` | `/fleet` | `{ "desired_workers": 1..32 }` | `200`, same body; `source` becomes `"api"` | `400` validation |
-| `POST` | `/fleet/prune-dead` | — | `200 { removed }` (clears stale worker entries from memory) | — |
-| `POST` | `/cleanup` | `?force=true` ignores the retention window | `200 { jobs_cleaned, files_deleted, bytes_freed }` | — |
-| `GET` | `/stats` | — | `200` stats snapshot (polled every 1 s by the UI) | — |
-| `GET` | `/events` | `?after_id=&limit=100` | `200 { events: Event[] }` from the in-memory buffer | — |
-| `GET` | `/health` | — | `200 { db: "ok", amqp: "ok" }` | `503` |
+| Method | Path | Success | Typical errors |
+|---|---|---|---|
+| POST | `/jobs` | 201 + estimate | 400 |
+| GET | `/jobs`, `/jobs/:id`, `/jobs/:id/tasks`, `/jobs/:id/task-graph` | 200 | 404 |
+| GET | `/jobs/:id/inputs/:index.csv`, `…/partials/:taskId.csv`, `…/result.csv`, `…/result.npy` | 200 | 404, 409 |
+| POST | `/jobs/:id/cancel` | 202 | 404, 409 |
+| DELETE | `/jobs/:id` | 204 | 404, 409 |
+| GET/PUT | `/fleet` | 200 | 400 |
+| POST | `/fleet/prune-dead`, `/cleanup` | 200 | — |
+| GET | `/stats`, `/events`, `/health` | 200 / 503 | — |
 
-### 10.1 Job response
+### 10.1 Job JSON and estimates
 
-```json
-{
-  "id": "uuid", "f": 12, "c": 1000, "status": "REDUCING", "seed": 8231947712,
-  "generated_files": 12, "failure_reason": null,
-  "created_at": "…", "generation_completed_at": "…", "finished_at": null,
-  "progress": { "generation": 1.0, "reduction": 0.36 },
-  "tasks": { "GENERATE": { "DONE": 3 }, "MERGE": { "DONE": 2, "PUBLISHED": 1 } },
-  "timings_ms": { "generation": 410, "reduction": null, "total": null },
-  "estimate": { "input_bytes": 12000, "peak_partial_bytes": 16000, "generate_tasks": 3, "merge_tasks": 3 }
-}
-```
+- **progress.generation** = `generated_files / f`
+- **progress.reduction** (while reducing): from count of pool **rows** in `READY`/`RESERVED`, not file sum
+- **estimate:** input bytes ≈ f×c; merge task count ≈ ⌈(f−1)/4⌉; peak partial bytes ≈ (merge_tasks−1)×8×c
+- **waiting** (stats/UI): generating, nothing done yet, no worker on this job
 
-- `progress.generation = generated_files / f`.
-- `progress.reduction`: 0 while `GENERATING`; `1 − (live − 1)/(f − 1)` while `REDUCING`, where `live` is the number of item **rows** that are `READY` or `RESERVED` (not the sum of their counts, which always equals F); 1 once `COMPLETED`.
-- `pool_items`: per item state, `{ items, files_covered }`.
-- `timings_ms`: wall-clock phases from `created_at`, `generation_completed_at` and `finished_at`; `reduction` only for `COMPLETED` jobs.
-- The list endpoint formats all returned jobs with two grouped queries, not per-job queries.
-- `estimate`: `input_bytes = f·c`; `merge_tasks = ⌈(f−1)/4⌉`; `peak_partial_bytes = (merge_tasks − 1)·8c` (all partials are kept until cleanup); `.npy` headers are ignored.
+### 10.4 Task graph
 
-### 10.2 Stats snapshot
+`GET /jobs/:id/task-graph` (ITD-012). Built from **tasks** + **items**: per-task inputs/outputs, edges from `produced_by` or GENERATE file range. No extra table. UI may collapse many GENERATE nodes client-side.
 
-```json
-{
-  "at": "…",
-  "workers": { "desired": 4, "total": 4, "idle": 1, "busy": 3, "stopping": 0, "dead": 0,
-               "list": [{ "id": "…", "state": "BUSY", "task_id": "…", "job_id": "…", "task_kind": "MERGE",
-                          "tasks_done": 118, "last_heartbeat_at": "…" }] },
-  "queue": { "tasks_ready": 120, "tasks_unacked": 3, "coordinator_backlog": 0, "tasks_dead": 0 },
-  "outbox_pending": 0,
-  "jobs": { "WAITING": 1, "GENERATING": 1, "REDUCING": 1, "COMPLETED": 5, "FAILED": 0, "CANCELLED": 0 },
-  "throughput": { "tasks_per_sec_1m": 5.7, "avg_ms_1m": { "GENERATE": 40, "MERGE": 65 } },
-  "active_jobs": [{ "id": "…", "f": 12, "c": 1000, "status": "REDUCING", "waiting": false,
-                    "progress": { "generation": 1, "reduction": 0.36 } }]
-}
-```
+Partial CSV preview uses **`produced_by`** on an input to choose which merge’s partial to download.
 
-| Field | Source |
+### Events (in memory)
+
+Ring buffer (~500), also logged to stdout. Types include `job_created`, `job_completed`, `job_failed`, `task_retry`, `duplicate_completion`, `cleanup_ran`, worker lifecycle events, etc. Resets on API restart.
+
+---
+
+## 11. Files on disk
+
+Under `DATA_DIR/jobs/{job_id}/`:
+
+| Path | Content |
 |---|---|
-| `workers` | In-memory list (§10.3) |
-| `queue.*` | RabbitMQ management API, `GET /api/queues/%2F/{name}` (`messages_ready`, `messages_unacknowledged`) |
-| `jobs`, `outbox_pending`, `throughput`, `active_jobs` | SQL. `outbox_pending` counts `CREATED` tasks, which is now the dispatch backlog waiting for queue slots (ITD-034). `throughput` uses `tasks.completed_at` and `duration_ms` over the last minute |
-| `WAITING` / `waiting` | A display-only view of `GENERATING` jobs: no task `DONE` and no busy worker currently on the job. `WAITING` is not a DB status. `jobs.GENERATING` counts only non-waiting jobs |
+| `inputs/{index:06d}.npy` | uint8[C] from GENERATE |
+| `partials/{task_id}.npy` | int64[C] from MERGE |
+| `result.npy` / `result.csv` | Final mean from last MERGE |
+| `*.tmp-*` | In-flight writes (cleaned up) |
 
-### 10.3 In-memory observability (ITD-024)
+Only the API defines these paths (ITD-008).
 
-- **Workers:** `Map<worker_id, Heartbeat & {last_heartbeat_at}>`, updated by an auto-ack consumer on `dm.heartbeats`.
-  - Shown as `dead` when there's no heartbeat for `WORKER_STALE_MS`.
-  - Removed after `WORKER_PRUNE_MS`, or as soon as it reports `STOPPED`.
-- **Events:** a ring buffer of `EVENT_BUFFER_SIZE` entries `{id, at, type, job_id?, task_id?, worker_id?, message}`.
-  - `id` is a counter that only increases; `GET /events?after_id=` returns newer entries.
-  - Every event is also written as one JSON line to stdout.
-- **Event types:** `job_created`, `generation_completed`, `job_completed`, `job_failed`, `job_cancelled`, `job_deleted`, `task_retry`, `task_dead_lettered`, `duplicate_completion`, `stale_failure`, `ignored_inactive_job`, `invalid_message`, `worker_started`, `worker_stopped`, `worker_dead`, `fleet_scaled`, `cleanup_ran`.
-  - `worker_started`, `worker_stopped` and `worker_dead` come from changes in the worker list.
+---
 
-## 11. File layout
+## 12. Cleanup
 
-Built only by `api/src/paths.ts` (ITD-028).
+On interval and on **POST /cleanup**: for finished jobs past retention, delete **partial** files and mark partial items **DELETED**. Inputs and results stay until **DELETE /jobs/:id**. Optional `?force=true` uses zero retention.
 
-```
-DATA_DIR/
-  jobs/{job_id}/
-    inputs/{index:06d}.npy     uint8[C]     written by GENERATE
-    partials/{task_id}.npy     int64[C]     written by a non-final MERGE
-    result.npy                 float64[C]   written by the final MERGE
-    result.csv                 one line, C values, '%.8f'
-    *.tmp-*                    in-flight atomic writes (swept by cleanup)
-```
-
-## 12. Cleanup sweep
-
-```text
-every CLEANUP_INTERVAL_MS, and on POST /cleanup (?force=true uses a retention of 0):
-  jobs := SELECT id FROM jobs
-          WHERE status IN ('COMPLETED','FAILED','CANCELLED')
-            AND finished_at <= now() - retention
-            AND partials_cleaned_at IS NULL
-  for each job:
-    delete DATA_DIR/jobs/{id}/partials/ and any *.tmp-* files under the job directory
-    UPDATE items SET state='DELETED' WHERE job_id = id AND kind = 'PARTIAL'
-    UPDATE jobs SET partials_cleaned_at = now() WHERE id = id
-  delete DATA_DIR/jobs/{uuid}/ directories with no jobs row
-    -- a worker finishing a task of a just-deleted job can recreate its directory;
-    -- the row always exists before any task is published, so no live job is affected
-  event cleanup_ran { jobs_cleaned, files_deleted, bytes_freed }
-```
+---
 
 ## 13. Configuration
 
-**API**
+### API (environment)
 
-| Env var | Default | Meaning |
+| Variable | Default | Meaning |
 |---|---|---|
-| `PORT` | `3000` | HTTP port |
-| `DATABASE_URL` | `postgres://dismean:dismean@localhost:5432/dismean` | Postgres |
-| `AMQP_URL` | `amqp://guest:guest@localhost:5672` | RabbitMQ |
-| `RABBITMQ_MGMT_URL` | `http://guest:guest@localhost:15672` | Management API for queue stats |
-| `DATA_DIR` | *(required, absolute)* | Shared file root |
-| `MAX_ATTEMPTS` | `3` | Clean-failure attempts per task |
-| `RELAY_INTERVAL_MS` | `200` | Outbox poll interval |
-| `RELAY_BATCH` | `500` | Upper bound on tasks per relay transaction |
-| `DISPATCH_QUEUE_FACTOR` | `2` | Ready tasks kept in `dm.tasks` per consuming worker (ITD-034) |
-| `WORKER_COUNT` | `4` | Default W until an operator sets one with `PUT /fleet` (ITD-035) |
-| `CLEANUP_INTERVAL_MS` | `600000` | Cleanup sweep interval |
-| `PARTIAL_RETENTION_MS` | `3600000` | Age after which partials of finished jobs are deleted |
-| `WORKER_STALE_MS` | `10000` | Heartbeat age after which a worker is shown as dead |
-| `WORKER_PRUNE_MS` | `60000` | Heartbeat age after which a worker is removed from the list |
-| `EVENT_BUFFER_SIZE` | `500` | In-memory event log size |
-| `PUBLISHED_STALE_MS` | `120000` | Reconcile `PUBLISHED` → `CREATED` when idle (ITD-037) |
+| `PORT` | 3000 | HTTP |
+| `DATABASE_URL` | local postgres URL | Postgres |
+| `AMQP_URL` | local amqp | RabbitMQ |
+| `RABBITMQ_MGMT_URL` | local management | Queue stats for `/stats` and orphan reconcile |
+| `DATA_DIR` | *(required, absolute)* | Shared files |
+| `MAX_ATTEMPTS` | 3 | Per-task retries |
+| `RELAY_INTERVAL_MS` | 200 | Relay poll |
+| `RELAY_BATCH` | 500 | Max tasks per relay tx |
+| `DISPATCH_QUEUE_FACTOR` | 2 | Target ready tasks per worker |
+| `WORKER_COUNT` | 4 | Default W until PUT /fleet (ITD-014) |
+| `CLEANUP_INTERVAL_MS` | 600000 | Cleanup period |
+| `PARTIAL_RETENTION_MS` | 3600000 | Partial file retention |
+| `WORKER_STALE_MS` / `WORKER_PRUNE_MS` | 10s / 60s | UI worker list |
+| `EVENT_BUFFER_SIZE` | 500 | Event ring |
+| `PUBLISHED_STALE_MS` | 120000 | Reconcile stuck PUBLISHED (ITD-003) |
 
-**Worker / supervisor**
+### Worker / supervisor
 
-| Env var | Default | Meaning |
+| Variable | Default | Meaning |
 |---|---|---|
-| `AMQP_URL` | `amqp://guest:guest@localhost:5672` | RabbitMQ |
-| `API_URL` | `http://localhost:3000` | Where the supervisor polls `GET /fleet` |
-| `DATA_DIR` | *(required, absolute)* | Shared file root |
-| `WORKER_COUNT` | `4` | W the supervisor starts with, before its first `/fleet` poll |
-| `FLEET_POLL_INTERVAL_S` | `1.5` | Supervisor's `/fleet` poll interval |
-| `HEARTBEAT_INTERVAL_S` | `2` | Observability heartbeat interval |
-| `AMQP_HEARTBEAT_S` | `10` | AMQP connection heartbeat |
-| `DRAIN_TIMEOUT_S` | `900` | Supervisor's wait for workers to drain on shutdown |
+| `AMQP_URL`, `DATA_DIR` | same as API | |
+| `API_URL` | http://localhost:3000 | Fleet poll |
+| `WORKER_COUNT` | 4 | Initial W before first poll |
+| `FLEET_POLL_INTERVAL_S` | 1.5 | Fleet poll |
+| `HEARTBEAT_INTERVAL_S` | 2 | UI heartbeat |
+| `AMQP_HEARTBEAT_S` | 10 | Broker heartbeat |
+| `DRAIN_TIMEOUT_S` | 900 | Supervisor shutdown wait |
 
-**Constants (in code or definitions.json, not configurable)**
+### Fixed by design
 
-| Constant | Value | Why fixed |
-|---|---|---|
-| `MAX_FILES_PER_TASK` | `5` | Problem constraint |
-| `GENERATE_BATCH` | `5` | ITD-007 |
-| Value range | `[0, 100]` integers | IPD-003 |
-| Dispatch order | Round-robin across jobs; MERGE before GENERATE, deepest first | ITD-034 |
-| `x-delivery-limit` on `dm.tasks` | `3` | ITD-010 |
-| `x-consumer-timeout` on `dm.tasks` | `900000` ms | ITD-008 |
+| Constant | Value |
+|---|---|
+| Max files per task | 5 |
+| GENERATE batch size | 5 |
+| Random values | integers 0–100 (IPD-003) |
+| Task queue delivery limit | 3 |
+| Consumer timeout | 15 min |
+
+Implementation details (SQL, pseudocode, parsers): **code-map** and source trees under `api/`, `worker/`, `contracts/`.
